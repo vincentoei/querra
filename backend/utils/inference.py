@@ -1,12 +1,19 @@
 """Model loading and SQL generation utilities."""
 
 import os
-import re
+import sys
+from pathlib import Path
+
 import torch
 from dotenv import load_dotenv
 from huggingface_hub import login
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import PeftModel
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from config import MAX_SEQ_LENGTH
+from utils.prompts import extract_sql
 
 load_dotenv()
 
@@ -27,11 +34,11 @@ def load_model_and_tokenizer(model_name: str, adapter_path: str | None = None):
         tokenizer.pad_token = tokenizer.eos_token
 
     if use_cpu or not torch.cuda.is_available():
-        # ponytail: CPU path loads fp16 and relies on system RAM; 7B needs ~14 GB.
+        # ponytail: CPU path uses float32 to avoid unsupported fp16 ops on CPU.
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.float16,
-            device_map="auto" if torch.cuda.is_available() else "cpu",
+            torch_dtype=torch.float32,
+            device_map="cpu",
             trust_remote_code=True,
             token=os.environ.get("HF_TOKEN"),
         )
@@ -58,7 +65,9 @@ def load_model_and_tokenizer(model_name: str, adapter_path: str | None = None):
 
 
 def generate_sql(model, tokenizer, prompt: str, max_new_tokens: int = 256) -> str:
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024)
+    inputs = tokenizer(
+        prompt, return_tensors="pt", truncation=True, max_length=MAX_SEQ_LENGTH
+    )
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
     with torch.inference_mode():
         outputs = model.generate(
@@ -72,7 +81,4 @@ def generate_sql(model, tokenizer, prompt: str, max_new_tokens: int = 256) -> st
     prompt_len = inputs["input_ids"].shape[1]
     generated = outputs[0][prompt_len:]
     text = tokenizer.decode(generated, skip_special_tokens=True)
-    # Keep only the first SQL-like statement and strip trailing punctuation.
-    text = text.strip()
-    text = re.split(r"[;\n]", text, maxsplit=1)[0].strip()
-    return text
+    return extract_sql(text)

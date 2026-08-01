@@ -1,5 +1,7 @@
 """Prompt formatting for Text-to-SQL."""
 
+from utils.safety import extract_first_query
+
 
 SYSTEM = (
     "You are a SQL expert. Given the database schema, write a single correct SQLite SQL query "
@@ -39,16 +41,5 @@ def format_few_shot(tokenizer, schema: str, question: str, examples: list[dict])
 
 
 def extract_sql(output: str) -> str:
-    """Strip chat template artifacts and return the SQL string."""
-    # Remove common markdown fences.
-    text = output.strip()
-    if text.startswith("```sql"):
-        text = text[6:]
-    elif text.startswith("```"):
-        text = text[3:]
-    if text.endswith("```"):
-        text = text[:-3]
-    text = text.strip()
-    # Take only first line if model added explanation.
-    # Keep query on one line for normalization.
-    return text.split("\n")[0].strip()
+    """Strip chat template artifacts and return the first valid SQL query."""
+    return extract_first_query(output)
