@@ -14,6 +14,11 @@ backend/data/databases/*
 !backend/data/raw/.gitkeep
 !backend/data/processed/.gitkeep
 !backend/data/databases/.gitkeep
+backend/outputs/*
+!backend/outputs/.gitkeep
+backend/logs/*
+!backend/logs/.gitkeep
+*.pkl
 wandb/
 *.log
 .DS_Store
