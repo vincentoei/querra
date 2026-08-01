@@ -6,7 +6,7 @@ from pathlib import Path
 
 import torch
 from dotenv import load_dotenv
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, get_peft_model
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -138,10 +138,12 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    compute_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_compute_dtype=compute_dtype,
         bnb_4bit_use_double_quant=True,
     )
 
@@ -153,7 +155,6 @@ def main():
         token=os.environ.get("HF_TOKEN"),
     )
     model.gradient_checkpointing_enable()
-    model = prepare_model_for_kbit_training(model)
 
     peft_config = LoraConfig(
         r=args.lora_r,
@@ -168,7 +169,8 @@ def main():
 
     raw_dataset = load_dataset("json", data_files=str(PROCESSED_TRAIN), split="train")
     if args.max_samples:
-        raw_dataset = raw_dataset.select(range(args.max_samples))
+        n = min(args.max_samples, len(raw_dataset))
+        raw_dataset = raw_dataset.select(range(n))
     dataset = preprocess_dataset(tokenizer, raw_dataset, args.max_seq_length)
 
     training_args = TrainingArguments(
