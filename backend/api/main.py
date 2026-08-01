@@ -71,6 +71,20 @@ def _get_schema_linker() -> SchemaLinker:
     return _state["schema_linker"]
 
 
+def _get_retriever() -> FewShotRetriever:
+    if "retriever" not in _state:
+        print("Loading few-shot retriever...")
+        retriever = FewShotRetriever(PROCESSED_TRAIN)
+        cache = PROCESSED_TRAIN.with_suffix(".pkl")
+        if cache.exists():
+            retriever.load_index(cache)
+        else:
+            retriever.build_index(cache)
+        _state["retriever"] = retriever
+        print("Retriever loaded.")
+    return _state["retriever"]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     model_name = os.environ.get("MODEL_NAME", BASE_MODEL)
@@ -82,25 +96,16 @@ async def lifespan(app: FastAPI):
     _state["model"] = model
     _state["tokenizer"] = tokenizer
     print("Model loaded.")
-
-    print("Loading few-shot retriever...")
-    retriever = FewShotRetriever(PROCESSED_TRAIN)
-    cache = PROCESSED_TRAIN.with_suffix(".pkl")
-    if cache.exists():
-        retriever.load_index(cache)
-    else:
-        retriever.build_index(cache)
-    _state["retriever"] = retriever
-    print("Retriever loaded.")
     yield
     _state.clear()
 
 
 app = FastAPI(title="Querra - Text-to-SQL Assistant", lifespan=lifespan)
 
+cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",")]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -153,9 +158,19 @@ def _try_execute(sql: str, db_id: str) -> tuple[list | None, str | None]:
 
 
 def _block_destructive(sql: str) -> bool:
-    upper = sql.upper()
-    for keyword in ("DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "TRUNCATE"):
-        if keyword in upper:
+    """Allow only SELECT statements (including CTEs and UNION/INTERSECT/EXCEPT).
+
+    Any other statement type (CREATE, DROP, INSERT, UPDATE, DELETE, ALTER, PRAGMA,
+    ATTACH, etc.) is blocked. If the SQL cannot be parsed, it is also blocked.
+    """
+    try:
+        statements = sqlglot.parse(sql, read="sqlite")
+    except Exception:
+        return True
+    if not statements:
+        return True
+    for stmt in statements:
+        if not isinstance(stmt, sqlglot.exp.Query):
             return True
     return False
 
@@ -171,8 +186,8 @@ async def generate_sql_endpoint(req: GenerateRequest):
         schema, _ = _get_schema_linker().build_schema(
             req.db_id, req.question, top_k=SCHEMA_LINKING_TOP_K_TABLES
         )
-    if req.use_few_shot and "retriever" in _state:
-        examples = _state["retriever"].retrieve(req.question, k=req.few_shot_k)
+    if req.use_few_shot:
+        examples = _get_retriever().retrieve(req.question, k=req.few_shot_k)
         prompt = format_few_shot(tokenizer, schema, req.question, examples)
     else:
         prompt = format_zero_shot(tokenizer, schema, req.question)
