@@ -1,0 +1,43 @@
+services:
+  api-gpu:
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile.gpu
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../models:/app/models
+      - ../data/databases:/app/data/databases
+      - ../.env:/app/.env:ro
+      - huggingface-cache:/app/cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - ADAPTER_PATH=/app/models/best-model
+    profiles:
+      - gpu
+
+  api-cpu:
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile.cpu
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../models:/app/models
+      - ../data/databases:/app/data/databases
+      - ../.env:/app/.env:ro
+      - huggingface-cache:/app/cache/huggingface
+    environment:
+      - ADAPTER_PATH=/app/models/best-model
+      - USE_CPU=1
+    profiles:
+      - cpu
+
+volumes:
+  huggingface-cache:
