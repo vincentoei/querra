@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-cd /home/vincentoei/projects/querra/backend
+cd "$(dirname "$0")/.."
 source .venv/bin/activate
 
 python scripts/run_baseline.py \

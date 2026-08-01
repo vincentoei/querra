@@ -2,19 +2,19 @@
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
-import sys
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
 from config import PROCESSED_DEV
 
 
 RUNS = [
-    ("Base zero-shot", ["python", "scripts/run_baseline.py", "--mode", "zero", "--output", "outputs/base_zero.json"]),
-    ("Prompt-engineered few-shot", ["python", "scripts/run_baseline.py", "--mode", "few", "--output", "outputs/base_few.json"]),
-    ("Best model + Phase 1 pipeline", ["python", "scripts/run_baseline.py", "--adapter_path", "models/best-model", "--mode", "zero", "--self_correct", "--max_retries", "2", "--output", "outputs/qlora_best.json"]),
+    ("Base zero-shot", [sys.executable, "scripts/run_baseline.py", "--mode", "zero", "--output", "outputs/base_zero.json"]),
+    ("Prompt-engineered few-shot", [sys.executable, "scripts/run_baseline.py", "--mode", "few", "--output", "outputs/base_few.json"]),
+    ("Best model + Phase 1 pipeline", [sys.executable, "scripts/run_baseline.py", "--adapter_path", "models/best-model", "--mode", "zero", "--self_correct", "--max_retries", "2", "--output", "outputs/qlora_best.json"]),
 ]
 
 
@@ -22,8 +22,8 @@ def main():
     table = []
     for name, cmd in RUNS:
         print(f"\n=== Running {name} ===")
-        subprocess.run(cmd, cwd=Path(__file__).resolve().parent.parent, check=True)
-        output_path = Path(cmd[cmd.index("--output") + 1])
+        subprocess.run(cmd, cwd=ROOT, check=True)
+        output_path = ROOT / cmd[cmd.index("--output") + 1]
         data = json.loads(output_path.read_text())
         metrics = data["metrics"]
         table.append(
@@ -42,7 +42,7 @@ def main():
             f"{row['model']:<35} {row['exact_match']:>12} {row['execution_accuracy']:>12} {row['avg_latency']:>12}"
         )
 
-    with open("outputs/results_table.json", "w", encoding="utf-8") as f:
+    with open(ROOT / "outputs" / "results_table.json", "w", encoding="utf-8") as f:
         json.dump(table, f, indent=2)
 
 

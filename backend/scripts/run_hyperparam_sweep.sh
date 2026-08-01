@@ -4,7 +4,7 @@
 # epoch-1 baseline (greedy + post-processing).
 
 set -e
-cd /home/vincentoei/projects/querra/backend
+cd "$(dirname "$0")/.."
 source .venv/bin/activate
 
 RUN () {
