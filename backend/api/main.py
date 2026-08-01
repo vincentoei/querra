@@ -15,11 +15,22 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config import ADAPTER_DIR, BASE_MODEL, DB_DIR, PROCESSED_TRAIN
+from config import (
+    ADAPTER_DIR,
+    BASE_MODEL,
+    DB_DIR,
+    PROCESSED_TRAIN,
+    SCHEMA_LINKING_EMBEDDINGS_CACHE,
+    SCHEMA_LINKING_EMBED_MODEL,
+    SCHEMA_LINKING_TOP_K_TABLES,
+    TABLES_FILE,
+)
 from evaluation.few_shot_retriever import FewShotRetriever
 from utils.inference import generate_sql, load_model_and_tokenizer
 from utils.postprocess import normalize_sql_to_schema
 from utils.prompts import extract_sql, format_few_shot, format_zero_shot
+from utils.schema import load_tables
+from utils.schema_linker import SchemaLinker
 from utils.self_correction import maybe_correct
 
 
@@ -30,6 +41,7 @@ class GenerateRequest(BaseModel):
     execute: bool = Field(True, description="Run the generated SQL against the DB")
     use_few_shot: bool = Field(False, description="Use retrieved few-shot examples in the prompt")
     few_shot_k: int = Field(3, ge=0, le=10, description="Number of few-shot examples (only if use_few_shot=True)")
+    use_schema_linking: bool = Field(False, description="Select relevant tables from the db_id schema before generating SQL")
 
 
 class GenerateResponse(BaseModel):
@@ -41,6 +53,22 @@ class GenerateResponse(BaseModel):
 
 
 _state = {}
+
+
+def _get_schema_linker() -> SchemaLinker:
+    if "schema_linker" not in _state:
+        print("Loading schema linker...")
+        tables = load_tables(TABLES_FILE)
+        linker = SchemaLinker(
+            tables, SCHEMA_LINKING_EMBED_MODEL, SCHEMA_LINKING_EMBEDDINGS_CACHE
+        )
+        if SCHEMA_LINKING_EMBEDDINGS_CACHE.exists():
+            linker.load_cache()
+        else:
+            linker.build_cache()
+        _state["schema_linker"] = linker
+        print("Schema linker loaded.")
+    return _state["schema_linker"]
 
 
 @asynccontextmanager
@@ -138,15 +166,20 @@ async def generate_sql_endpoint(req: GenerateRequest):
         raise HTTPException(status_code=503, detail="Model not loaded")
 
     model, tokenizer = _state["model"], _state["tokenizer"]
+    schema = req.schema_str
+    if req.use_schema_linking and req.db_id:
+        schema, _ = _get_schema_linker().build_schema(
+            req.db_id, req.question, top_k=SCHEMA_LINKING_TOP_K_TABLES
+        )
     if req.use_few_shot and "retriever" in _state:
         examples = _state["retriever"].retrieve(req.question, k=req.few_shot_k)
-        prompt = format_few_shot(tokenizer, req.schema_str, req.question, examples)
+        prompt = format_few_shot(tokenizer, schema, req.question, examples)
     else:
-        prompt = format_zero_shot(tokenizer, req.schema_str, req.question)
+        prompt = format_zero_shot(tokenizer, schema, req.question)
     start = time.time()
     raw = generate_sql(model, tokenizer, prompt)
     sql = extract_sql(raw)
-    sql = normalize_sql_to_schema(sql, req.schema_str)
+    sql = normalize_sql_to_schema(sql, schema)
 
     if _block_destructive(sql):
         latency = time.time() - start
@@ -169,9 +202,9 @@ async def generate_sql_endpoint(req: GenerateRequest):
         # Self-correction on validation or execution failure.
         if execution_error:
             sql, _ = maybe_correct(
-                model, tokenizer, req.schema_str, req.question, sql, req.db_id, DB_DIR, max_retries=2
+                model, tokenizer, schema, req.question, sql, req.db_id, DB_DIR, max_retries=2
             )
-            sql = normalize_sql_to_schema(sql, req.schema_str)
+            sql = normalize_sql_to_schema(sql, schema)
             if _block_destructive(sql):
                 execution_error = "Destructive query in corrected SQL"
             else:

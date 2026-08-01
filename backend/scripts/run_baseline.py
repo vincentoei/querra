@@ -21,12 +21,23 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config import BASE_MODEL, DB_DIR, PROCESSED_DEV, PROCESSED_TRAIN
+from config import (
+    BASE_MODEL,
+    DB_DIR,
+    PROCESSED_DEV,
+    PROCESSED_TRAIN,
+    SCHEMA_LINKING_EMBEDDINGS_CACHE,
+    SCHEMA_LINKING_EMBED_MODEL,
+    SCHEMA_LINKING_TOP_K_TABLES,
+    TABLES_FILE,
+)
 from evaluation.few_shot_retriever import FewShotRetriever
 from evaluation.metrics import component_match, exact_match, execution_match
 from utils.inference import generate_sql, load_model_and_tokenizer
 from utils.postprocess import normalize_sql_to_schema
 from utils.prompts import extract_sql, format_few_shot, format_zero_shot
+from utils.schema import load_tables
+from utils.schema_linker import SchemaLinker
 from utils.self_correction import maybe_correct
 
 
@@ -49,6 +60,8 @@ def main():
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--self_correct", action="store_true", help="Retry failed queries with the error message")
     parser.add_argument("--max_retries", type=int, default=2)
+    parser.add_argument("--use_schema_linking", action="store_true", help="Select relevant tables before prompt construction")
+    parser.add_argument("--schema_linking_top_k", type=int, default=SCHEMA_LINKING_TOP_K_TABLES)
     parser.add_argument("--use_wandb", action="store_true")
     parser.add_argument("--wandb_project", default="text-to-sql-qlora")
     args = parser.parse_args()
@@ -65,6 +78,21 @@ def main():
     model, tokenizer = load_model_and_tokenizer(args.model, adapter_path=args.adapter_path)
 
     examples = load_examples(Path(args.split), args.limit)
+
+    linker = None
+    if args.use_schema_linking:
+        print("Loading schema linker...")
+        tables = load_tables(TABLES_FILE)
+        linker = SchemaLinker(
+            tables, SCHEMA_LINKING_EMBED_MODEL, SCHEMA_LINKING_EMBEDDINGS_CACHE
+        )
+        if SCHEMA_LINKING_EMBEDDINGS_CACHE.exists():
+            print("Loading schema embeddings cache...")
+            linker.load_cache()
+        else:
+            print("Building schema embeddings cache...")
+            linker.build_cache()
+
     retriever = None
     if args.mode == "few":
         retriever = FewShotRetriever(PROCESSED_TRAIN)
@@ -84,6 +112,14 @@ def main():
 
     for i, ex in enumerate(examples):
         schema, question, query, db_id = ex["schema"], ex["question"], ex["query"], ex["db_id"]
+        selected_tables: list[str] = []
+        if linker:
+            schema, selected_tables_set = linker.build_schema(
+                db_id, question, top_k=args.schema_linking_top_k
+            )
+            selected_tables = sorted(selected_tables_set)
+        schema_tokens = len(tokenizer(schema, add_special_tokens=False)["input_ids"])
+
         if args.mode == "few":
             few_examples = retriever.retrieve(question, k=args.few_shot_k)
             prompt = format_few_shot(tokenizer, schema, question, few_examples)
@@ -127,6 +163,9 @@ def main():
                 "component_match": cm,
                 "latency": latencies[-1],
                 "retries": retries,
+                "schema_used": schema,
+                "selected_tables": selected_tables,
+                "schema_tokens": schema_tokens,
             }
         )
         if (i + 1) % 10 == 0:
