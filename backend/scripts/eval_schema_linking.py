@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config import SCHEMA_LINKING_TOP_K_TABLES
+from config import ADAPTER_DIR, SCHEMA_LINKING_TOP_K_TABLES
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -40,7 +40,7 @@ def _run_eval(
         sys.executable,
         "scripts/run_baseline.py",
         "--adapter_path",
-        "models/best-model",
+        str(ADAPTER_DIR),
         "--mode",
         "zero",
         "--output",

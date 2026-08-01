@@ -8,13 +8,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from config import PROCESSED_DEV
+from config import ADAPTER_DIR, PROCESSED_DEV
 
 
 RUNS = [
     ("Base zero-shot", [sys.executable, "scripts/run_baseline.py", "--mode", "zero", "--output", "outputs/base_zero.json"]),
     ("Prompt-engineered few-shot", [sys.executable, "scripts/run_baseline.py", "--mode", "few", "--output", "outputs/base_few.json"]),
-    ("Best model + Phase 1 pipeline", [sys.executable, "scripts/run_baseline.py", "--adapter_path", "models/best-model", "--mode", "zero", "--self_correct", "--max_retries", "2", "--output", "outputs/qlora_best.json"]),
+    ("Best model + Phase 1 pipeline", [sys.executable, "scripts/run_baseline.py", "--adapter_path", str(ADAPTER_DIR), "--mode", "zero", "--self_correct", "--max_retries", "2", "--output", "outputs/qlora_best.json"]),
 ]
 
 
