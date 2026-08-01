@@ -85,8 +85,6 @@ class SchemaLinker:
             )
         else:
             self._embeddings[db_id] = np.zeros((len(candidates), 0))
-        if self.cache_path:
-            self.save_cache()
 
     def build_cache(self) -> None:
         """Encode and cache embeddings for every database in tables."""
