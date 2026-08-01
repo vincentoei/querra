@@ -8,6 +8,8 @@ services:
     volumes:
       - ../models:/app/models
       - ../data/databases:/app/data/databases
+      - ../data/processed:/app/data/processed
+      - ../data/raw:/app/data/raw
       - ../.env:/app/.env:ro
       - huggingface-cache:/app/cache/huggingface
     deploy:
@@ -31,6 +33,8 @@ services:
     volumes:
       - ../models:/app/models
       - ../data/databases:/app/data/databases
+      - ../data/processed:/app/data/processed
+      - ../data/raw:/app/data/raw
       - ../.env:/app/.env:ro
       - huggingface-cache:/app/cache/huggingface
     environment:

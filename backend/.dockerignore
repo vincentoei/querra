@@ -1,0 +1,26 @@
+# Environment / secrets
+.env
+.env.*
+
+# Python
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+
+# Project artifacts (mounted at runtime or generated)
+models/
+data/
+logs/
+outputs/
+cache/
+wandb/
+
+# Git
+.git
+.gitignore
+
+# Documentation (not needed in image)
+*.md
