@@ -1,12 +1,11 @@
 """FastAPI inference service for Text-to-SQL."""
 
+import asyncio
 import os
-import sqlite3
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import sqlglot
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -19,6 +18,8 @@ from config import (
     ADAPTER_DIR,
     BASE_MODEL,
     DB_DIR,
+    EXECUTE_TIMEOUT,
+    MAX_RESULT_ROWS,
     PROCESSED_TRAIN,
     SCHEMA_LINKING_EMBEDDINGS_CACHE,
     SCHEMA_LINKING_EMBED_MODEL,
@@ -26,9 +27,11 @@ from config import (
     TABLES_FILE,
 )
 from evaluation.few_shot_retriever import FewShotRetriever
+from utils.execution import execute_sql, get_db_path
 from utils.inference import generate_sql, load_model_and_tokenizer
 from utils.postprocess import normalize_sql_to_schema
 from utils.prompts import extract_sql, format_few_shot, format_zero_shot
+from utils.safety import is_read_only_sql, validate_db_id
 from utils.schema import load_tables
 from utils.schema_linker import SchemaLinker
 from utils.self_correction import maybe_correct
@@ -38,7 +41,7 @@ class GenerateRequest(BaseModel):
     schema_str: str = Field(..., description="CREATE TABLE style schema string")
     question: str = Field(..., description="Natural language question")
     db_id: str | None = Field(None, description="Optional Spider database ID to execute against")
-    execute: bool = Field(True, description="Run the generated SQL against the DB")
+    execute: bool = Field(False, description="Run the generated SQL against the DB")
     use_few_shot: bool = Field(False, description="Use retrieved few-shot examples in the prompt")
     few_shot_k: int = Field(3, ge=0, le=10, description="Number of few-shot examples (only if use_few_shot=True)")
     use_schema_linking: bool = Field(False, description="Select relevant tables from the db_id schema before generating SQL")
@@ -102,11 +105,22 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Querra - Text-to-SQL Assistant", lifespan=lifespan)
 
-cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",")]
+_raw_cors = os.environ.get("CORS_ORIGINS", "*")
+_cors_list = [o.strip() for o in _raw_cors.split(",") if o.strip()]
+if _cors_list == ["*"]:
+    _cors_origins = ["*"]
+    _cors_credentials = False
+elif _cors_list:
+    _cors_origins = _cors_list
+    _cors_credentials = True
+else:
+    _cors_origins = []
+    _cors_credentials = False
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins,
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -121,60 +135,6 @@ async def health():
     }
 
 
-def _validate_sql(sql: str) -> bool:
-    try:
-        sqlglot.parse(sql, read="sqlite")
-        return True
-    except Exception:
-        return False
-
-
-def _execute_sql(sql: str, db_id: str, db_dir: Path = DB_DIR) -> list:
-    db_path = db_dir / db_id / f"{db_id}.sqlite"
-    if not db_path.exists():
-        db_path = db_dir / db_id / f"{db_id}.db"
-    if not db_path.exists():
-        files = list((db_dir / db_id).glob("*.sqlite")) + list(
-            (db_dir / db_id).glob("*.db")
-        )
-        if not files:
-            raise FileNotFoundError(f"No database found for {db_id}")
-        db_path = files[0]
-
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
-    conn.row_factory = sqlite3.Row
-    try:
-        rows = conn.execute(sql).fetchall()
-        return [tuple(row) for row in rows]
-    finally:
-        conn.close()
-
-
-def _try_execute(sql: str, db_id: str) -> tuple[list | None, str | None]:
-    try:
-        return _execute_sql(sql, db_id), None
-    except Exception as e:
-        return None, str(e)
-
-
-def _block_destructive(sql: str) -> bool:
-    """Allow only SELECT statements (including CTEs and UNION/INTERSECT/EXCEPT).
-
-    Any other statement type (CREATE, DROP, INSERT, UPDATE, DELETE, ALTER, PRAGMA,
-    ATTACH, etc.) is blocked. If the SQL cannot be parsed, it is also blocked.
-    """
-    try:
-        statements = sqlglot.parse(sql, read="sqlite")
-    except Exception:
-        return True
-    if not statements:
-        return True
-    for stmt in statements:
-        if not isinstance(stmt, sqlglot.exp.Query):
-            return True
-    return False
-
-
 @app.post("/generate-sql", response_model=GenerateResponse)
 async def generate_sql_endpoint(req: GenerateRequest):
     if "model" not in _state:
@@ -182,57 +142,107 @@ async def generate_sql_endpoint(req: GenerateRequest):
 
     model, tokenizer = _state["model"], _state["tokenizer"]
     schema = req.schema_str
+
+    if req.db_id and not validate_db_id(req.db_id):
+        raise HTTPException(status_code=400, detail="Invalid db_id")
+
     if req.use_schema_linking and req.db_id:
-        schema, _ = _get_schema_linker().build_schema(
-            req.db_id, req.question, top_k=SCHEMA_LINKING_TOP_K_TABLES
+        schema, _ = await asyncio.to_thread(
+            _get_schema_linker().build_schema,
+            req.db_id,
+            req.question,
+            top_k=SCHEMA_LINKING_TOP_K_TABLES,
         )
+
     if req.use_few_shot:
-        examples = _get_retriever().retrieve(req.question, k=req.few_shot_k)
+        examples = await asyncio.to_thread(
+            _get_retriever().retrieve, req.question, req.few_shot_k
+        )
         prompt = format_few_shot(tokenizer, schema, req.question, examples)
     else:
         prompt = format_zero_shot(tokenizer, schema, req.question)
-    start = time.time()
-    raw = generate_sql(model, tokenizer, prompt)
+
+    start = time.perf_counter()
+    raw = await asyncio.to_thread(generate_sql, model, tokenizer, prompt)
     sql = extract_sql(raw)
     sql = normalize_sql_to_schema(sql, schema)
 
-    if _block_destructive(sql):
-        latency = time.time() - start
+    if not is_read_only_sql(sql):
+        latency = time.perf_counter() - start
         return GenerateResponse(
             sql=sql,
             valid=False,
-            execution_error="Destructive queries are blocked",
+            execution_error="Query is not read-only or invalid",
             latency=latency,
         )
 
     execution_result = None
     execution_error = None
     if req.execute and req.db_id:
-        valid = _validate_sql(sql)
-        if not valid:
-            execution_error = "Generated SQL failed validation"
+        db_path = get_db_path(req.db_id, DB_DIR)
+        if db_path is None:
+            execution_error = "Database not found"
         else:
-            execution_result, execution_error = _try_execute(sql, req.db_id)
+            try:
+                execution_result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        execute_sql,
+                        sql,
+                        db_path,
+                        max_rows=MAX_RESULT_ROWS,
+                        case_sensitive_like=False,
+                    ),
+                    timeout=EXECUTE_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                execution_error = f"Query execution timed out after {EXECUTE_TIMEOUT}s"
+            except Exception as e:
+                execution_error = str(e)
 
-        # Self-correction on validation or execution failure.
         if execution_error:
-            sql, _ = maybe_correct(
-                model, tokenizer, schema, req.question, sql, req.db_id, DB_DIR, max_retries=2
+            # Self-correction runs model generation + execution in a background thread.
+            corrected_sql, _ = await asyncio.to_thread(
+                maybe_correct,
+                model,
+                tokenizer,
+                schema,
+                req.question,
+                sql,
+                req.db_id,
+                DB_DIR,
+                max_retries=2,
             )
-            sql = normalize_sql_to_schema(sql, schema)
-            if _block_destructive(sql):
-                execution_error = "Destructive query in corrected SQL"
-            else:
-                valid = _validate_sql(sql)
-                if not valid:
-                    execution_error = "Corrected SQL still failed validation"
+            if corrected_sql != sql:
+                sql = corrected_sql
+                sql = normalize_sql_to_schema(sql, schema)
+                if not is_read_only_sql(sql):
+                    execution_error = "Corrected query is not read-only or invalid"
                 else:
-                    execution_result, execution_error = _try_execute(sql, req.db_id)
+                    db_path = get_db_path(req.db_id, DB_DIR)
+                    if db_path is None:
+                        execution_error = "Database not found"
+                    else:
+                        try:
+                            execution_result = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    execute_sql,
+                                    sql,
+                                    db_path,
+                                    max_rows=MAX_RESULT_ROWS,
+                                    case_sensitive_like=False,
+                                ),
+                                timeout=EXECUTE_TIMEOUT,
+                            )
+                            execution_error = None
+                        except asyncio.TimeoutError:
+                            execution_error = f"Query execution timed out after {EXECUTE_TIMEOUT}s"
+                        except Exception as e:
+                            execution_error = str(e)
 
-    latency = time.time() - start
+    latency = time.perf_counter() - start
     return GenerateResponse(
         sql=sql,
-        valid=_validate_sql(sql),
+        valid=is_read_only_sql(sql),
         execution_result=execution_result,
         execution_error=execution_error,
         latency=latency,
