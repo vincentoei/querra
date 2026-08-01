@@ -1,10 +1,10 @@
 """Self-correction loop for generated SQL."""
 
-import sqlglot
-
+from utils.execution import execute_sql, get_db_path
 from utils.inference import generate_sql
 from utils.postprocess import normalize_sql_to_schema
 from utils.prompts import extract_sql
+from utils.safety import is_read_only_sql
 
 
 SYSTEM = (
@@ -16,22 +16,11 @@ SYSTEM = (
 
 def _execution_error(sql: str, db_id: str, db_dir) -> str | None:
     """Return the execution error string, or None if the query executes successfully."""
-    from evaluation.metrics import _get_db_path, execute_sql
-
-    db_path = _get_db_path(db_id, db_dir)
+    db_path = get_db_path(db_id, db_dir)
     if db_path is None:
         return "No database found"
     try:
         execute_sql(sql, db_path)
-        return None
-    except Exception as e:
-        return str(e)
-
-
-def _validation_error(sql: str) -> str | None:
-    """Return the SQL validation error string, or None if the query parses."""
-    try:
-        sqlglot.parse(sql, read="sqlite")
         return None
     except Exception as e:
         return str(e)
@@ -67,7 +56,10 @@ def maybe_correct(
 
     Returns the final SQL and the number of retries used (0 if the original was already correct).
     """
-    err = _validation_error(sql) or _execution_error(sql, db_id, db_dir)
+    if not is_read_only_sql(sql):
+        err = "SQL is not read-only or invalid"
+    else:
+        err = _execution_error(sql, db_id, db_dir)
     if err is None:
         return sql, 0
 
@@ -76,7 +68,10 @@ def maybe_correct(
         raw = generate_sql(model, tokenizer, retry_prompt)
         sql = extract_sql(raw)
         sql = normalize_sql_to_schema(sql, schema)
-        err = _validation_error(sql) or _execution_error(sql, db_id, db_dir)
+        if not is_read_only_sql(sql):
+            err = "Corrected SQL is not read-only or invalid"
+            continue
+        err = _execution_error(sql, db_id, db_dir)
         if err is None:
             return sql, retry + 1
 

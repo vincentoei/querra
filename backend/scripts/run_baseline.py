@@ -128,7 +128,6 @@ def main():
 
         start = time.time()
         raw = generate_sql(model, tokenizer, prompt)
-        latencies.append(time.time() - start)
         pred = extract_sql(raw)
         pred = normalize_sql_to_schema(pred, schema)
 
@@ -146,6 +145,8 @@ def main():
                 em = exact_match(pred, query)
                 xm = execution_match(pred, query, db_id, DB_DIR)
                 cm = component_match(pred, query)
+
+        latencies.append(time.time() - start)
 
         exact += int(em)
         exec_acc += int(xm)

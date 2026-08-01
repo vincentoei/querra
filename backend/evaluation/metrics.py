@@ -1,11 +1,15 @@
 """Evaluation metrics for Text-to-SQL."""
 
-import re
-import sqlite3
+import sys
 from pathlib import Path
 
+import re
 import sqlglot
 import sqlparse
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from utils.execution import execute_sql, get_db_path
 
 
 def normalize_sql(sql: str) -> str:
@@ -30,36 +34,8 @@ def exact_match(pred: str, gold: str) -> bool:
     return normalize_sql(pred) == normalize_sql(gold)
 
 
-def _get_db_path(db_id: str, db_dir: Path) -> Path | None:
-    candidate = db_dir / db_id / f"{db_id}.sqlite"
-    if candidate.exists():
-        return candidate
-    candidate = db_dir / db_id / f"{db_id}.db"
-    if candidate.exists():
-        return candidate
-    # Some Spider DBs name the file <db_id>.sqlite or sqlite3.
-    files = list((db_dir / db_id).glob("*.sqlite")) + list((db_dir / db_id).glob("*.db"))
-    if files:
-        return files[0]
-    return None
-
-
-def execute_sql(sql: str, db_path: Path, timeout: float = 10.0):
-    """Execute SQL against a read-only SQLite DB and return rows as tuples."""
-    uri = f"file:{db_path}?mode=ro"
-    conn = sqlite3.connect(uri, uri=True, timeout=5.0)
-    conn.row_factory = sqlite3.Row
-    try:
-        conn.execute("PRAGMA case_sensitive_like=OFF")
-        cur = conn.execute(sql)
-        rows = cur.fetchall()
-        return [tuple(row) for row in rows]
-    finally:
-        conn.close()
-
-
 def execution_match(pred: str, gold: str, db_id: str, db_dir: Path) -> bool:
-    db_path = _get_db_path(db_id, db_dir)
+    db_path = get_db_path(db_id, db_dir)
     if db_path is None:
         return False
     try:
