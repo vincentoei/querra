@@ -9,7 +9,11 @@ from sentence_transformers import SentenceTransformer, util
 
 
 class FewShotRetriever:
-    def __init__(self, train_path: Path, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
+    def __init__(
+        self,
+        train_path: Path,
+        model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
+    ):
         self.train_path = Path(train_path)
         self.model = SentenceTransformer(model_name)
         self.examples: list[dict] = []

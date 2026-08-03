@@ -1,11 +1,10 @@
 """Self-correction loop for generated SQL."""
 
-from utils.execution import execute_sql, get_db_path
+from db_backends import DatabaseBackend
 from utils.inference import generate_sql
 from utils.postprocess import normalize_sql_to_schema
 from utils.prompts import extract_sql
 from utils.safety import is_read_only_sql
-
 
 SYSTEM = (
     "You are a SQL expert. The previous SQLite query failed. "
@@ -14,19 +13,18 @@ SYSTEM = (
 )
 
 
-def _execution_error(sql: str, db_id: str, db_dir) -> str | None:
+def _execution_error(sql: str, backend: DatabaseBackend) -> str | None:
     """Return the execution error string, or None if the query executes successfully."""
-    db_path = get_db_path(db_id, db_dir)
-    if db_path is None:
-        return "No database found"
     try:
-        execute_sql(sql, db_path)
+        backend.execute(sql)
         return None
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - any backend execution error is the correction signal
         return str(e)
 
 
-def build_correction_prompt(tokenizer, schema: str, question: str, sql: str, error: str) -> str:
+def build_correction_prompt(
+    tokenizer, schema: str, question: str, sql: str, error: str
+) -> str:
     """Build a chat prompt asking the model to fix the failed SQL."""
     user_text = (
         f"Schema:\n{schema}\n\n"
@@ -39,7 +37,9 @@ def build_correction_prompt(tokenizer, schema: str, question: str, sql: str, err
         {"role": "system", "content": SYSTEM},
         {"role": "user", "content": user_text},
     ]
-    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    return tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
 
 
 def maybe_correct(
@@ -48,8 +48,8 @@ def maybe_correct(
     schema: str,
     question: str,
     sql: str,
-    db_id: str,
-    db_dir,
+    db_id: str | None,
+    backend: DatabaseBackend,
     max_retries: int = 2,
 ):
     """Retry a failed SQL query up to max_retries times.
@@ -59,7 +59,7 @@ def maybe_correct(
     if not is_read_only_sql(sql):
         err = "SQL is not read-only or invalid"
     else:
-        err = _execution_error(sql, db_id, db_dir)
+        err = _execution_error(sql, backend)
     if err is None:
         return sql, 0
 
@@ -71,7 +71,7 @@ def maybe_correct(
         if not is_read_only_sql(sql):
             err = "Corrected SQL is not read-only or invalid"
             continue
-        err = _execution_error(sql, db_id, db_dir)
+        err = _execution_error(sql, backend)
         if err is None:
             return sql, retry + 1
 

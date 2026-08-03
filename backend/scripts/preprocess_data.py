@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import (
+    DB_DIR,
     DEV_FILE,
     PROCESSED_DEV,
     PROCESSED_DIR,
@@ -15,7 +16,6 @@ from config import (
     SOURCE_DB_DIR,
     TABLES_FILE,
     TRAIN_FILE,
-    DB_DIR,
 )
 from utils.schema import build_schema, load_tables
 

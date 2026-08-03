@@ -11,12 +11,14 @@ def _build_identifier_map(schema: str) -> dict[str, str]:
     mapping: dict[str, str] = {}
     # The schema contains multiple CREATE TABLE statements separated by blank lines.
     # sqlglot needs them parsed individually, so split on CREATE TABLE boundaries.
-    segments = [s.strip() for s in re.split(r"(?=CREATE TABLE)", schema.strip()) if s.strip()]
+    segments = [
+        s.strip() for s in re.split(r"(?=CREATE TABLE)", schema.strip()) if s.strip()
+    ]
 
     for segment in segments:
         try:
             statements = sqlglot.parse(segment, read="sqlite")
-        except Exception:
+        except sqlglot.errors.Error:
             continue
 
         for stmt in statements:
@@ -60,7 +62,7 @@ def normalize_sql_to_schema(sql: str, schema: str) -> str:
 
     try:
         statements = sqlglot.parse(sql, read="sqlite")
-    except Exception:
+    except sqlglot.errors.Error:
         # If we cannot parse the SQL, return it unchanged.
         return sql
 

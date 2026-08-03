@@ -1,19 +1,21 @@
 """Schema-aware RAG: select relevant tables before prompt construction."""
 
+import logging
 import pickle
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from sentence_transformers import SentenceTransformer, util
 
-import sys
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import SCHEMA_LINKING_EMBED_MODEL
 from utils.schema import _map_type, build_schema_for_tables
+
+logger = logging.getLogger(__name__)
 
 
 class SchemaLinker:
@@ -75,7 +77,7 @@ class SchemaLinker:
                 if db_id in self._embeddings:
                     return
             except Exception:
-                pass
+                logger.warning("Failed to load schema embeddings cache", exc_info=True)
         candidates = self._build_candidates(db_id)
         self._candidates[db_id] = candidates
         if candidates and self.model is not None:
@@ -143,9 +145,7 @@ class SchemaLinker:
         column_names = entry["column_names_original"]
         foreign_keys = entry["foreign_keys"]
         name_to_idx = {name: i for i, name in enumerate(table_names)}
-        selected_indices = {
-            name_to_idx[n] for n in selected if n in name_to_idx
-        }
+        selected_indices = {name_to_idx[n] for n in selected if n in name_to_idx}
 
         changed = True
         while changed:
@@ -200,7 +200,9 @@ class SchemaLinker:
         if not selected:
             # Fallback to the full schema if nothing was selected.
             selected = {
-                name for name in entry["table_names_original"] if name != "sqlite_sequence"
+                name
+                for name in entry["table_names_original"]
+                if name != "sqlite_sequence"
             }
 
         return selected
@@ -236,7 +238,15 @@ if __name__ == "__main__":
                 [2, "id"],
                 [2, "title"],
             ],
-            "column_types": ["number", "text", "number", "number", "number", "number", "text"],
+            "column_types": [
+                "number",
+                "text",
+                "number",
+                "number",
+                "number",
+                "number",
+                "text",
+            ],
             "primary_keys": [0, 2, 5],
             "foreign_keys": [[3, 0], [4, 5]],
         }

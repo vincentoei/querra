@@ -7,8 +7,8 @@ from pathlib import Path
 import torch
 from dotenv import load_dotenv
 from huggingface_hub import login
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import PeftModel
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 

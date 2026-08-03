@@ -2,7 +2,6 @@
 
 import argparse
 import json
-import os
 import time
 from pathlib import Path
 
@@ -26,13 +25,15 @@ from config import (
     DB_DIR,
     PROCESSED_DEV,
     PROCESSED_TRAIN,
-    SCHEMA_LINKING_EMBEDDINGS_CACHE,
     SCHEMA_LINKING_EMBED_MODEL,
+    SCHEMA_LINKING_EMBEDDINGS_CACHE,
     SCHEMA_LINKING_TOP_K_TABLES,
     TABLES_FILE,
 )
+from db_backends import SQLiteBackend
 from evaluation.few_shot_retriever import FewShotRetriever
 from evaluation.metrics import component_match, exact_match, execution_match
+from utils.execution import get_db_path
 from utils.inference import generate_sql, load_model_and_tokenizer
 from utils.postprocess import normalize_sql_to_schema
 from utils.prompts import extract_sql, format_few_shot, format_zero_shot
@@ -58,10 +59,20 @@ def main():
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--few_shot_k", type=int, default=3)
     parser.add_argument("--output", type=str, default=None)
-    parser.add_argument("--self_correct", action="store_true", help="Retry failed queries with the error message")
+    parser.add_argument(
+        "--self_correct",
+        action="store_true",
+        help="Retry failed queries with the error message",
+    )
     parser.add_argument("--max_retries", type=int, default=2)
-    parser.add_argument("--use_schema_linking", action="store_true", help="Select relevant tables before prompt construction")
-    parser.add_argument("--schema_linking_top_k", type=int, default=SCHEMA_LINKING_TOP_K_TABLES)
+    parser.add_argument(
+        "--use_schema_linking",
+        action="store_true",
+        help="Select relevant tables before prompt construction",
+    )
+    parser.add_argument(
+        "--schema_linking_top_k", type=int, default=SCHEMA_LINKING_TOP_K_TABLES
+    )
     parser.add_argument("--use_wandb", action="store_true")
     parser.add_argument("--wandb_project", default="text-to-sql-qlora")
     args = parser.parse_args()
@@ -75,7 +86,9 @@ def main():
         wandb.init(project=args.wandb_project, name=run_name)
 
     print("Loading model and tokenizer...")
-    model, tokenizer = load_model_and_tokenizer(args.model, adapter_path=args.adapter_path)
+    model, tokenizer = load_model_and_tokenizer(
+        args.model, adapter_path=args.adapter_path
+    )
 
     examples = load_examples(Path(args.split), args.limit)
 
@@ -107,11 +120,18 @@ def main():
     predictions = []
     exact = 0
     exec_acc = 0
-    component_totals = {k: 0 for k in ["select", "from", "where", "group_by", "order_by", "join"]}
+    component_totals = {
+        k: 0 for k in ["select", "from", "where", "group_by", "order_by", "join"]
+    }
     latencies = []
 
     for i, ex in enumerate(examples):
-        schema, question, query, db_id = ex["schema"], ex["question"], ex["query"], ex["db_id"]
+        schema, question, query, db_id = (
+            ex["schema"],
+            ex["question"],
+            ex["query"],
+            ex["db_id"],
+        )
         selected_tables: list[str] = []
         if linker:
             schema, selected_tables_set = linker.build_schema(
@@ -137,14 +157,24 @@ def main():
 
         retries = 0
         if args.self_correct and not xm:
-            corrected, retries = maybe_correct(
-                model, tokenizer, schema, question, pred, db_id, DB_DIR, max_retries=args.max_retries
-            )
-            if corrected != pred:
-                pred = corrected
-                em = exact_match(pred, query)
-                xm = execution_match(pred, query, db_id, DB_DIR)
-                cm = component_match(pred, query)
+            db_path = get_db_path(db_id, DB_DIR)
+            if db_path:
+                backend = SQLiteBackend(db_path)
+                corrected, retries = maybe_correct(
+                    model,
+                    tokenizer,
+                    schema,
+                    question,
+                    pred,
+                    db_id,
+                    backend,
+                    max_retries=args.max_retries,
+                )
+                if corrected != pred:
+                    pred = corrected
+                    em = exact_match(pred, query)
+                    xm = execution_match(pred, query, db_id, DB_DIR)
+                    cm = component_match(pred, query)
 
         latencies.append(time.time() - start)
 
@@ -171,8 +201,8 @@ def main():
         )
         if (i + 1) % 10 == 0:
             print(
-                f"[{i+1}/{len(examples)}] EM={exact/(i+1):.3f} "
-                f"Exec={exec_acc/(i+1):.3f} AvgLat={sum(latencies)/len(latencies):.2f}s"
+                f"[{i + 1}/{len(examples)}] EM={exact / (i + 1):.3f} "
+                f"Exec={exec_acc / (i + 1):.3f} AvgLat={sum(latencies) / len(latencies):.2f}s"
             )
 
     n = len(examples)

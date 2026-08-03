@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 TYPE_MAP = {
     "number": "INTEGER",
     "text": "TEXT",
@@ -97,7 +96,9 @@ def build_schema_for_tables(
     tables_entry: dict[str, Any], selected_tables: set[str], include_fks: bool = True
 ) -> str:
     """Convenience wrapper for building a schema from a selected set of tables."""
-    return build_schema(tables_entry, selected_tables=selected_tables, include_fks=include_fks)
+    return build_schema(
+        tables_entry, selected_tables=selected_tables, include_fks=include_fks
+    )
 
 
 def load_tables(path: Path | str) -> dict[str, dict[str, Any]]:

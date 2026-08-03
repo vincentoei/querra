@@ -1,9 +1,9 @@
 """Evaluation metrics for Text-to-SQL."""
 
+import re
 import sys
 from pathlib import Path
 
-import re
 import sqlglot
 import sqlparse
 
@@ -22,7 +22,7 @@ def normalize_sql(sql: str) -> str:
             strip_comments=True,
             reindent=True,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - sqlparse may raise various errors; fall back to simple lowercasing
         parsed = sql.lower()
     # Remove all whitespace and backticks.
     parsed = parsed.replace("`", "")
@@ -40,17 +40,16 @@ def execution_match(pred: str, gold: str, db_id: str, db_dir: Path) -> bool:
         return False
     try:
         pred_rows = execute_sql(pred, db_path)
-    except Exception:
+    except Exception:  # noqa: BLE001 - any execution failure means mismatch
         return False
     try:
         gold_rows = execute_sql(gold, db_path)
-    except Exception:
-        # If gold fails, assume mismatch.
+    except Exception:  # noqa: BLE001 - if gold fails, assume mismatch
         return False
     # Multiset comparison via sorted rows.
     try:
         return sorted(pred_rows) == sorted(gold_rows)
-    except Exception:
+    except Exception:  # noqa: BLE001 - uncomparable rows mean mismatch
         return False
 
 
@@ -58,7 +57,7 @@ def _extract_components(sql: str) -> dict:
     """Extract simple component sets from SQL via sqlglot."""
     try:
         parsed = sqlglot.parse_one(sql, read="sqlite")
-    except Exception:
+    except sqlglot.errors.Error:
         return {}
 
     def sql_str(node):

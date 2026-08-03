@@ -2,19 +2,22 @@
 
 from utils.safety import extract_first_query
 
-
 SYSTEM = (
     "You are a SQL expert. Given the database schema, write a single correct SQLite SQL query "
     "that answers the question. Output only the SQL query, without explanations or markdown."
 )
 
 
-def _build_user_text(schema: str, question: str, examples: list[dict] | None = None) -> str:
+def _build_user_text(
+    schema: str, question: str, examples: list[dict] | None = None
+) -> str:
     parts = []
     if examples:
         parts.append("Here are some example question-query pairs:")
         for i, ex in enumerate(examples, 1):
-            parts.append(f"Example {i}:\nQuestion: {ex['question']}\nQuery: {ex['query']}")
+            parts.append(
+                f"Example {i}:\nQuestion: {ex['question']}\nQuery: {ex['query']}"
+            )
         parts.append("Now write the query for the following schema and question.")
     parts.append(f"Schema:\n{schema}\n\nQuestion: {question}\n\nQuery:")
     return "\n\n".join(parts)

@@ -3,16 +3,14 @@
 import argparse
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import sqlglot
 
-import sys
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import ADAPTER_DIR, SCHEMA_LINKING_TOP_K_TABLES
-
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -21,7 +19,7 @@ def _extract_gold_tables(sql: str) -> set[str]:
     """Extract table names from the gold SQL query."""
     try:
         parsed = sqlglot.parse_one(sql, read="sqlite")
-    except Exception:
+    except sqlglot.errors.Error:
         return set()
     return {t.name for t in parsed.find_all(sqlglot.exp.Table)}
 
@@ -72,8 +70,12 @@ def _compute_table_recall(predictions: list[dict]) -> float:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--limit", type=int, default=None, help="Limit dev examples for quick testing")
-    parser.add_argument("--no_self_correct", action="store_true", help="Disable self-correction")
+    parser.add_argument(
+        "--limit", type=int, default=None, help="Limit dev examples for quick testing"
+    )
+    parser.add_argument(
+        "--no_self_correct", action="store_true", help="Disable self-correction"
+    )
     parser.add_argument("--max_retries", type=int, default=2)
     parser.add_argument("--top_k", type=int, default=SCHEMA_LINKING_TOP_K_TABLES)
     args = parser.parse_args()

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 import torch
+from datasets import load_dataset
 from dotenv import load_dotenv
 from peft import LoraConfig, get_peft_model
 from transformers import (
@@ -16,7 +17,6 @@ from transformers import (
     TrainerCallback,
     TrainingArguments,
 )
-from datasets import load_dataset
 
 
 class EpochSnapshotCallback(TrainerCallback):
@@ -26,7 +26,7 @@ class EpochSnapshotCallback(TrainerCallback):
         self.snapshot_dir = snapshot_dir
 
     def on_epoch_end(self, args, state, control, model=None, tokenizer=None, **kwargs):
-        epoch = int(round(state.epoch))
+        epoch = round(state.epoch)
         if epoch < 1:
             return control
         dest = self.snapshot_dir.parent / f"qlora-adapter-epoch{epoch}"
@@ -37,6 +37,7 @@ class EpochSnapshotCallback(TrainerCallback):
             tokenizer.save_pretrained(dest)
         print(f"Epoch snapshot saved to {dest}")
         return control
+
 
 import sys
 
@@ -76,7 +77,6 @@ def preprocess_dataset(tokenizer, dataset, max_seq_length: int):
     response_template_ids = tokenizer.encode(
         response_template, add_special_tokens=False
     )
-    eos_token_id = tokenizer.eos_token_id
 
     def build_example(ex):
         prompt = format_zero_shot(tokenizer, ex["schema"], ex["question"])
@@ -116,15 +116,30 @@ def main():
     parser.add_argument("--num_epochs", type=int, default=NUM_EPOCHS)
     parser.add_argument("--max_seq_length", type=int, default=MAX_SEQ_LENGTH)
     parser.add_argument("--batch_size", type=int, default=PER_DEVICE_BATCH_SIZE)
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=GRADIENT_ACCUMULATION_STEPS)
+    parser.add_argument(
+        "--gradient_accumulation_steps", type=int, default=GRADIENT_ACCUMULATION_STEPS
+    )
     parser.add_argument("--learning_rate", type=float, default=LEARNING_RATE)
     parser.add_argument("--lora_r", type=int, default=LORA_R)
     parser.add_argument("--lora_alpha", type=int, default=LORA_ALPHA)
     parser.add_argument("--lora_dropout", type=float, default=LORA_DROPOUT)
-    parser.add_argument("--target_modules", default=",".join(TARGET_MODULES), help="Comma-separated LoRA target modules")
+    parser.add_argument(
+        "--target_modules",
+        default=",".join(TARGET_MODULES),
+        help="Comma-separated LoRA target modules",
+    )
     parser.add_argument("--wandb_project", default="text-to-sql-qlora")
-    parser.add_argument("--max_samples", type=int, default=None, help="Limit training samples for quick tests")
-    parser.add_argument("--resume_from_checkpoint", default=None, help="Path to checkpoint to resume from")
+    parser.add_argument(
+        "--max_samples",
+        type=int,
+        default=None,
+        help="Limit training samples for quick tests",
+    )
+    parser.add_argument(
+        "--resume_from_checkpoint",
+        default=None,
+        help="Path to checkpoint to resume from",
+    )
     args = parser.parse_args()
 
     os.environ.setdefault("WANDB_PROJECT", args.wandb_project)
