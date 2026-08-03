@@ -1,5 +1,6 @@
 """Shared path and model configuration."""
 
+import os
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -8,7 +9,11 @@ DATA_DIR = PROJECT_ROOT / "data"
 RAW_DIR = DATA_DIR / "raw" / "spider_extracted" / "spider_data"
 PROCESSED_DIR = DATA_DIR / "processed"
 DB_DIR = DATA_DIR / "databases"
+UPLOAD_DIR = DATA_DIR / "uploads"
 MODEL_DIR = PROJECT_ROOT / "models"
+
+# Registry metadata for registered databases.
+QUERRA_DB = DATA_DIR / "querra.db"
 
 PROCESSED_TRAIN = PROCESSED_DIR / "train.jsonl"
 PROCESSED_DEV = PROCESSED_DIR / "dev.jsonl"
@@ -16,6 +21,8 @@ TABLES_FILE = RAW_DIR / "tables.json"
 TRAIN_FILE = RAW_DIR / "train_spider.json"
 DEV_FILE = RAW_DIR / "dev.json"
 SOURCE_DB_DIR = RAW_DIR / "database"
+
+# External model/db settings are read from env at runtime.
 
 BASE_MODEL = "unsloth/Qwen2.5-Coder-3B-Instruct-bnb-4bit"
 ADAPTER_DIR = MODEL_DIR / "best-model"
@@ -38,3 +45,8 @@ FEW_SHOT_K = 3
 SCHEMA_LINKING_TOP_K_TABLES = 3
 SCHEMA_LINKING_EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 SCHEMA_LINKING_EMBEDDINGS_CACHE = PROCESSED_DIR / "schema_embeddings.pkl"
+
+# Admin API key for protected endpoints. If unset, admin operations are disabled.
+ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "")
+# Optional comma-separated list of directories from which admin-registered DB paths are allowed.
+ALLOWED_DB_DIRS = os.environ.get("ALLOWED_DB_DIRS", str(DATA_DIR))
