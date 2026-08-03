@@ -11,9 +11,14 @@ backend/models/*
 backend/data/raw/*
 backend/data/processed/*
 backend/data/databases/*
+backend/data/uploads/*
+backend/data/querra.db
+!.gitkeep
 !backend/data/raw/.gitkeep
 !backend/data/processed/.gitkeep
 !backend/data/databases/.gitkeep
+!backend/data/uploads/.gitkeep
+
 backend/outputs/*
 !backend/outputs/.gitkeep
 backend/logs/*
