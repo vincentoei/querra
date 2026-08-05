@@ -20,11 +20,14 @@ def _map_type(t: str) -> str:
 def build_schema(
     tables_entry: dict[str, Any],
     selected_tables: set[str] | None = None,
+    selected_columns: dict[str, set[str]] | None = None,
     include_fks: bool = True,
 ) -> str:
     """Return a CREATE TABLE style schema string for a Spider DB.
 
     If selected_tables is given, only those tables are included.
+    If selected_columns is given, only those columns (plus primary/foreign key
+    columns) are included for each table.
     Foreign-key comments are only emitted when both tables are selected.
     """
     table_names = tables_entry["table_names_original"]
@@ -40,6 +43,16 @@ def build_schema(
             name_to_idx[name] for name in selected_tables if name in name_to_idx
         }
 
+    # Foreign-key columns must be preserved even when filtering columns.
+    fk_column_indices: dict[int, set[int]] = {}
+    for col_a, col_b in foreign_keys:
+        table_a = column_names[col_a][0]
+        table_b = column_names[col_b][0]
+        if table_a != -1:
+            fk_column_indices.setdefault(table_a, set()).add(col_a)
+        if table_b != -1:
+            fk_column_indices.setdefault(table_b, set()).add(col_b)
+
     # Group columns by table, skipping wildcard and sqlite_sequence.
     table_columns: dict[int, list[tuple[int, str, str]]] = {}
     for col_idx, (table_idx, col_name) in enumerate(column_names):
@@ -52,6 +65,14 @@ def build_schema(
         table_name = table_names[table_idx]
         if table_name == "sqlite_sequence":
             continue
+
+        # Apply column-level filtering if requested for this table.
+        if selected_columns is not None and table_name in selected_columns:
+            is_pk = col_idx in primary_keys
+            is_fk = col_idx in fk_column_indices.get(table_idx, set())
+            if not (is_pk or is_fk or col_name in selected_columns[table_name]):
+                continue
+
         table_columns.setdefault(table_idx, []).append(
             (col_idx, col_name, _map_type(column_types[col_idx]))
         )
@@ -67,7 +88,7 @@ def build_schema(
         if pk_cols:
             col_defs.append(f"    PRIMARY KEY ({', '.join(pk_cols)})")
         statements.append(
-            f"CREATE TABLE {table_name} (\n" + ",\n".join(col_defs) + "\n)"
+            f"CREATE TABLE {table_name} (\n" + ",\n".join(col_defs) + "\n);"
         )
 
     if not include_fks:
@@ -98,6 +119,21 @@ def build_schema_for_tables(
     """Convenience wrapper for building a schema from a selected set of tables."""
     return build_schema(
         tables_entry, selected_tables=selected_tables, include_fks=include_fks
+    )
+
+
+def build_schema_for_columns(
+    tables_entry: dict[str, Any],
+    selected_tables: set[str],
+    selected_columns: dict[str, set[str]],
+    include_fks: bool = True,
+) -> str:
+    """Convenience wrapper for building a schema from selected tables and columns."""
+    return build_schema(
+        tables_entry,
+        selected_tables=selected_tables,
+        selected_columns=selected_columns,
+        include_fks=include_fks,
     )
 
 

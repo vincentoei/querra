@@ -12,8 +12,8 @@ from sentence_transformers import SentenceTransformer, util
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config import SCHEMA_LINKING_EMBED_MODEL
-from utils.schema import _map_type, build_schema_for_tables
+from config import settings
+from utils.schema import _map_type, build_schema_for_columns, build_schema_for_tables
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ class SchemaLinker:
     def __init__(
         self,
         tables: dict[str, dict[str, Any]],
-        model_name: str | None = SCHEMA_LINKING_EMBED_MODEL,
+        model_name: str | None = settings.schema_linking_embed_model,
         cache_path: Path | str | None = None,
     ):
         self.tables = tables
@@ -223,6 +223,209 @@ class SchemaLinker:
         schema = build_schema_for_tables(entry, selected, include_fks=include_fks)
         return schema, selected
 
+    def _keyword_selected_columns(
+        self, db_id: str, question: str, selected_tables: set[str]
+    ) -> dict[str, set[str]]:
+        """Select columns whose names appear literally in the question."""
+        entry = self.tables[db_id]
+        table_names = entry["table_names_original"]
+        column_names = entry["column_names_original"]
+        selected_indices = {
+            i for i, name in enumerate(table_names) if name in selected_tables
+        }
+        q = question.lower()
+        selected: dict[str, set[str]] = {}
+        for col_idx, (table_idx, col_name) in enumerate(column_names):
+            if table_idx == -1 or col_name == "*":
+                continue
+            if table_idx not in selected_indices:
+                continue
+            table_name = table_names[table_idx]
+            if table_name == "sqlite_sequence":
+                continue
+            if self._matches_name(col_name, q):
+                selected.setdefault(table_name, set()).add(col_name)
+        return selected
+
+    def _embedding_selected_columns(
+        self,
+        db_id: str,
+        question: str,
+        selected_tables: set[str],
+        top_k: int = 5,
+        threshold: float = 0.0,
+    ) -> dict[str, set[str]]:
+        """Select columns by embedding similarity to the question (per table)."""
+        entry = self.tables[db_id]
+        if not selected_tables or self.model is None:
+            return {}
+
+        table_names = entry["table_names_original"]
+        column_names = entry["column_names_original"]
+        column_types = entry["column_types"]
+        selected_indices = {
+            i for i, name in enumerate(table_names) if name in selected_tables
+        }
+
+        # Build candidates only for columns in selected tables.
+        candidates: list[tuple[str, str, int]] = []
+        for col_idx, (table_idx, col_name) in enumerate(column_names):
+            if table_idx == -1 or col_name == "*":
+                continue
+            if table_idx not in selected_indices:
+                continue
+            table_name = table_names[table_idx]
+            if table_name == "sqlite_sequence":
+                continue
+            candidates.append(
+                (
+                    table_name,
+                    col_name,
+                    col_idx,
+                )
+            )
+
+        if not candidates:
+            return {}
+
+        texts = [
+            f"Table {table_name} has column {col_name} ({_map_type(column_types[col_idx])})"
+            for table_name, col_name, col_idx in candidates
+        ]
+        query_emb = self.model.encode(
+            question, show_progress_bar=False, convert_to_tensor=False
+        )
+        candidate_embs = self.model.encode(
+            texts, show_progress_bar=False, convert_to_tensor=False
+        )
+        scores = util.cos_sim(query_emb, candidate_embs)[0]
+        scores = np.asarray(scores).flatten()
+
+        selected: dict[str, set[str]] = {}
+        for table_name in selected_tables:
+            table_indices = [
+                i for i, (t, _, _) in enumerate(candidates) if t == table_name
+            ]
+            if not table_indices:
+                continue
+            table_scores = scores[table_indices]
+            k = min(top_k, len(table_indices))
+            top_indices = np.argsort(table_scores)[::-1][:k]
+            for idx in top_indices:
+                if table_scores[idx] >= threshold:
+                    _, col_name, _ = candidates[table_indices[idx]]
+                    selected.setdefault(table_name, set()).add(col_name)
+        return selected
+
+    def _preserve_key_columns(
+        self, db_id: str, selected_tables: set[str]
+    ) -> dict[str, set[str]]:
+        """Preserve primary-key and foreign-key columns for selected tables."""
+        entry = self.tables[db_id]
+        table_names = entry["table_names_original"]
+        column_names = entry["column_names_original"]
+        primary_keys = set(entry["primary_keys"])
+        foreign_keys = entry["foreign_keys"]
+        selected_indices = {
+            i for i, name in enumerate(table_names) if name in selected_tables
+        }
+
+        preserved: dict[str, set[str]] = {}
+        for col_idx in primary_keys:
+            table_idx, col_name = column_names[col_idx]
+            if table_idx == -1 or table_idx not in selected_indices:
+                continue
+            table_name = table_names[table_idx]
+            preserved.setdefault(table_name, set()).add(col_name)
+
+        for col_a, col_b in foreign_keys:
+            for col_idx in (col_a, col_b):
+                table_idx, col_name = column_names[col_idx]
+                if table_idx == -1 or table_idx not in selected_indices:
+                    continue
+                table_name = table_names[table_idx]
+                preserved.setdefault(table_name, set()).add(col_name)
+        return preserved
+
+    def link_columns(
+        self,
+        db_id: str,
+        question: str,
+        table_top_k: int = 3,
+        column_top_k: int = 5,
+        column_threshold: float = 0.0,
+        use_keywords: bool = True,
+    ) -> tuple[set[str], dict[str, set[str]]]:
+        """Return (selected_tables, selected_columns) for the question.
+
+        Column-level selection always runs on top of table-level selection.
+        Primary-key and foreign-key columns are always preserved.
+        """
+        entry = self.tables.get(db_id)
+        if not entry:
+            return set(), {}
+
+        selected_tables = self.link(
+            db_id, question, top_k=table_top_k, use_keywords=use_keywords
+        )
+        if not selected_tables:
+            return set(), {}
+
+        preserved = self._preserve_key_columns(db_id, selected_tables)
+        selected_columns: dict[str, set[str]] = {t: set() for t in selected_tables}
+
+        if use_keywords:
+            keyword_cols = self._keyword_selected_columns(
+                db_id, question, selected_tables
+            )
+            for table_name, cols in keyword_cols.items():
+                selected_columns.setdefault(table_name, set()).update(cols)
+
+        embedding_cols = self._embedding_selected_columns(
+            db_id,
+            question,
+            selected_tables,
+            top_k=column_top_k,
+            threshold=column_threshold,
+        )
+        for table_name, cols in embedding_cols.items():
+            selected_columns.setdefault(table_name, set()).update(cols)
+
+        # Merge in preserved key columns.
+        for table_name, cols in preserved.items():
+            selected_columns.setdefault(table_name, set()).update(cols)
+
+        return selected_tables, selected_columns
+
+    def build_schema_column_level(
+        self,
+        db_id: str,
+        question: str,
+        table_top_k: int = 3,
+        column_top_k: int = 5,
+        column_threshold: float = 0.0,
+        use_keywords: bool = True,
+        include_fks: bool = True,
+    ) -> tuple[str, set[str], dict[str, set[str]]]:
+        """Return (filtered_schema_string, selected_tables, selected_columns)."""
+        entry = self.tables.get(db_id)
+        if not entry:
+            return "", set(), {}
+        selected_tables, selected_columns = self.link_columns(
+            db_id,
+            question,
+            table_top_k=table_top_k,
+            column_top_k=column_top_k,
+            column_threshold=column_threshold,
+            use_keywords=use_keywords,
+        )
+        if not selected_tables:
+            return "", set(), {}
+        schema = build_schema_for_columns(
+            entry, selected_tables, selected_columns, include_fks=include_fks
+        )
+        return schema, selected_tables, selected_columns
+
 
 if __name__ == "__main__":
     # Keyword + FK-closure sanity check; no embedding model needed.
@@ -256,4 +459,17 @@ if __name__ == "__main__":
     assert "users" in selected, selected
     assert "orders" in selected, selected
     assert "products" in selected, selected
-    print("Schema linker sanity check passed.")
+    print("Table-level schema linker sanity check passed.")
+
+    # Column-level sanity check: asking about title should keep products.title
+    # plus key columns, but drop users.name if it is not selected.
+    schema, selected_tables, selected_columns = linker.build_schema_column_level(
+        "test_db", "What is the product title?", table_top_k=0, column_top_k=0
+    )
+    assert "products" in selected_tables, selected_tables
+    assert "title" in selected_columns.get("products", set()), selected_columns
+    assert "id" in selected_columns.get("products", set()), selected_columns
+    assert "users" not in selected_tables or "name" not in selected_columns.get(
+        "users", set()
+    ), selected_columns
+    print("Column-level schema linker sanity check passed.")
