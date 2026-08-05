@@ -99,8 +99,9 @@ def test_sqlite_backend_from_registry(tmp_path):
     assert isinstance(backend, SQLiteBackend)
     schema = backend.get_schema()
     assert "CREATE TABLE t" in schema
-    rows = backend.execute("SELECT name FROM t")
+    rows, columns = backend.execute("SELECT name FROM t")
     assert rows == [("x",)]
+    assert columns == ["name"]
 
 
 def test_sqlite_backend_blocks_destructive(tmp_path):

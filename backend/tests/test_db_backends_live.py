@@ -55,6 +55,7 @@ def test_postgres_backend_via_api(admin_headers):
     data = res.json()
     assert data["valid"] is True
     assert ["Alice"] in data["execution_result"]
+    assert data["execution_columns"] == ["name"]
 
     client.delete(f"/api/v1/admin/databases/{db_id}", headers=admin_headers)
 
@@ -90,5 +91,6 @@ def test_mysql_backend_via_api(admin_headers):
     data = res.json()
     assert data["valid"] is True
     assert ["Alice"] in data["execution_result"]
+    assert data["execution_columns"] == ["name"]
 
     client.delete(f"/api/v1/admin/databases/{db_id}", headers=admin_headers)

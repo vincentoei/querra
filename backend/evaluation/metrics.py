@@ -39,11 +39,11 @@ def execution_match(pred: str, gold: str, db_id: str, db_dir: Path) -> bool:
     if db_path is None:
         return False
     try:
-        pred_rows = execute_sql(pred, db_path)
+        pred_rows, _ = execute_sql(pred, db_path)
     except Exception:  # noqa: BLE001 - any execution failure means mismatch
         return False
     try:
-        gold_rows = execute_sql(gold, db_path)
+        gold_rows, _ = execute_sql(gold, db_path)
     except Exception:  # noqa: BLE001 - if gold fails, assume mismatch
         return False
     # Multiset comparison via sorted rows.

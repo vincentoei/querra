@@ -18,8 +18,11 @@ def execute_sql(
     timeout: float = 10.0,
     max_rows: int | None = None,
     case_sensitive_like: bool = False,
-) -> list[tuple]:
+) -> tuple[list[tuple], list[str]]:
     """Execute a read-only SQL query against a SQLite DB and return rows.
+
+    Returns a ``(rows, columns)`` tuple where ``columns`` is the list of
+    column names from the cursor description (empty for non-SELECT queries).
 
     Raises ValueError if the SQL is not read-only, and other exceptions on
     execution errors.
@@ -40,6 +43,7 @@ def execute_sql(
             rows = cur.fetchmany(max_rows)
         else:
             rows = cur.fetchall()
-        return [tuple(row) for row in rows]
+        columns = [d[0] for d in cur.description] if cur.description else []
+        return [tuple(row) for row in rows], columns
     finally:
         conn.close()
