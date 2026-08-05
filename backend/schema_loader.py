@@ -70,7 +70,7 @@ def build_schema_from_sqlite(db_path: Path | str) -> str:
             if pk_cols:
                 col_defs.append(f"    PRIMARY KEY ({', '.join(pk_cols)})")
 
-            create = f"CREATE TABLE {table_name} (\n" + ",\n".join(col_defs) + "\n)"
+            create = f"CREATE TABLE {table_name} (\n" + ",\n".join(col_defs) + "\n);"
             statements.append(create)
 
             for fk in _foreign_keys(conn, table_name):

@@ -5,29 +5,25 @@ import logging
 import time
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
 from api.security import require_admin_api_key
 from api.state import get_model, get_tokenizer
-from config import (
-    EXECUTE_TIMEOUT,
-    MAX_RESULT_ROWS,
-    PROCESSED_TRAIN,
-    SCHEMA_LINKING_EMBED_MODEL,
-    SCHEMA_LINKING_EMBEDDINGS_CACHE,
-    SCHEMA_LINKING_TOP_K_TABLES,
-    TABLES_FILE,
-    UPLOAD_DIR,
-)
+from config import PROCESSED_TRAIN, TABLES_FILE, UPLOAD_DIR, settings
 from db_backends import DatabaseBackend
 from evaluation.few_shot_retriever import FewShotRetriever
 from registry import DatabaseRecord, DatabaseRegistry
 from schema_loader import validate_db_file
 from utils.inference import generate_sql
-from utils.postprocess import normalize_sql_to_schema
-from utils.prompts import extract_sql, format_few_shot, format_zero_shot
+from utils.postprocess import postprocess_sql
+from utils.prompts import SERVING_SYSTEM, extract_sql, format_few_shot, format_zero_shot
+from utils.relevance import (
+    check_question_schema_relevance,
+    validate_sql_identifiers,
+)
 from utils.safety import is_read_only_sql, validate_admin_db_path, validate_db_id
 from utils.schema import load_tables
 from utils.schema_linker import SchemaLinker
@@ -49,9 +45,7 @@ _registry: DatabaseRegistry | None = None
 def get_registry() -> DatabaseRegistry:
     global _registry
     if _registry is None:
-        from config import QUERRA_DB
-
-        _registry = DatabaseRegistry(QUERRA_DB)
+        _registry = DatabaseRegistry(settings.querra_db)
     return _registry
 
 
@@ -71,9 +65,11 @@ def _get_schema_linker() -> SchemaLinker | None:
         try:
             tables = load_tables(TABLES_FILE)
             _linker = SchemaLinker(
-                tables, SCHEMA_LINKING_EMBED_MODEL, SCHEMA_LINKING_EMBEDDINGS_CACHE
+                tables,
+                settings.schema_linking_embed_model,
+                settings.schema_linking_embeddings_cache,
             )
-            if SCHEMA_LINKING_EMBEDDINGS_CACHE.exists():
+            if settings.schema_linking_embeddings_cache.exists():
                 _linker.load_cache()
             else:
                 _linker.build_cache()
@@ -172,6 +168,10 @@ class GenerateRequest(BaseModel):
     use_schema_linking: bool = Field(
         False, description="Select relevant tables (Spider DBs only)"
     )
+    use_column_level_linking: bool = Field(
+        False,
+        description="Select relevant columns within selected tables (Spider DBs only)",
+    )
     self_correct: bool = Field(True, description="Retry on execution failure")
     max_retries: int = Field(2, ge=0, le=5)
 
@@ -187,8 +187,10 @@ class GenerateResponse(BaseModel):
     sql: str
     valid: bool
     execution_result: list | None = None
+    execution_columns: list[str] | None = None
     execution_error: str | None = None
     latency: float
+    warnings: list[str] | None = None
 
 
 class ExecuteRequest(BaseModel):
@@ -207,8 +209,10 @@ class ExecuteResponse(BaseModel):
     sql: str
     valid: bool
     execution_result: list | None = None
+    execution_columns: list[str] | None = None
     execution_error: str | None = None
     latency: float
+    warnings: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -217,9 +221,9 @@ class ExecuteResponse(BaseModel):
 
 
 def _allowed_db_dirs() -> list[str]:
-    from config import ALLOWED_DB_DIRS, DATA_DIR
+    from config import DATA_DIR
 
-    raw = ALLOWED_DB_DIRS.strip()
+    raw = settings.allowed_db_dirs.strip()
     if raw:
         return [d.strip() for d in raw.split(",") if d.strip()]
     return [str(DATA_DIR)]
@@ -238,12 +242,25 @@ def _resolve_schema_and_backend(
         try:
             backend = DatabaseBackend.from_registry(record)
             schema = backend.get_schema()
+        except FileNotFoundError as e:
+            logger.warning("Database file not found for db_id=%s: %s", req.db_id, e)
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except OSError as e:
+            logger.warning(
+                "Database file not accessible for db_id=%s: %s", req.db_id, e
+            )
+            raise HTTPException(status_code=404, detail=str(e)) from e
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=400, detail=str(e)) from e
         return schema, backend
     if req.schema_str:
         return req.schema_str, None
     raise HTTPException(status_code=400, detail="Provide either db_id or schema_str")
+
+
+def _get_schema_dialect(backend: DatabaseBackend | None) -> str:
+    """Return the sqlglot dialect to use for parsing the schema."""
+    return getattr(backend, "dialect", "sqlite") if backend is not None else "sqlite"
 
 
 def _maybe_schema_link(db_id: str, question: str, schema: str) -> str:
@@ -253,11 +270,29 @@ def _maybe_schema_link(db_id: str, question: str, schema: str) -> str:
         return schema
     try:
         reduced, _ = linker.build_schema(
-            db_id, question, top_k=SCHEMA_LINKING_TOP_K_TABLES
+            db_id, question, top_k=settings.schema_linking_top_k_tables
         )
         return reduced
     except Exception:
         logger.exception("Schema linking failed for db_id=%s", db_id)
+        return schema
+
+
+def _maybe_column_schema_link(db_id: str, question: str, schema: str) -> str:
+    """Reduce schema to selected tables and columns for Spider-style DBs."""
+    linker = _get_schema_linker()
+    if linker is None or db_id not in linker.tables:
+        return schema
+    try:
+        reduced, _, _ = linker.build_schema_column_level(
+            db_id,
+            question,
+            table_top_k=settings.schema_linking_top_k_tables,
+            column_top_k=settings.schema_linking_top_k_columns,
+        )
+        return reduced
+    except Exception:
+        logger.exception("Column-level schema linking failed for db_id=%s", db_id)
         return schema
 
 
@@ -290,18 +325,22 @@ def _record_query(
 async def _run_backend_query(
     backend: DatabaseBackend,
     sql: str,
-    max_rows: int = MAX_RESULT_ROWS,
-) -> tuple[list | None, str | None]:
+    max_rows: int = settings.max_result_rows,
+) -> tuple[list | None, list[str] | None, str | None]:
     try:
-        rows = await asyncio.wait_for(
+        rows, columns = await asyncio.wait_for(
             asyncio.to_thread(backend.execute, sql, max_rows),
-            timeout=EXECUTE_TIMEOUT,
+            timeout=settings.execute_timeout,
         )
-        return rows, None
+        return rows, columns, None
     except TimeoutError:
-        return None, f"Query execution timed out after {EXECUTE_TIMEOUT}s"
+        return (
+            None,
+            None,
+            f"Query execution timed out after {settings.execute_timeout}s",
+        )
     except Exception as e:  # noqa: BLE001 - backend may raise DB-specific errors
-        return None, str(e)
+        return None, None, str(e)
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +353,7 @@ async def list_databases():
     return get_registry().list_databases()
 
 
-@router.get("/databases/{db_id}/schema", response_model=str)
+@router.get("/databases/{db_id}/schema", response_class=PlainTextResponse)
 async def get_database_schema(db_id: str):
     if not validate_db_id(db_id):
         raise HTTPException(status_code=400, detail="Invalid db_id")
@@ -324,8 +363,14 @@ async def get_database_schema(db_id: str):
     try:
         backend = DatabaseBackend.from_registry(record)
         return backend.get_schema()
+    except FileNotFoundError as e:
+        logger.warning("Database file not found for db_id=%s: %s", db_id, e)
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except OSError as e:
+        logger.warning("Database file not accessible for db_id=%s: %s", db_id, e)
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/generate-sql", response_model=GenerateResponse)
@@ -337,22 +382,54 @@ async def generate_sql_endpoint(req: GenerateRequest):
         raise HTTPException(status_code=503, detail="Model not loaded")
 
     schema, backend = _resolve_schema_and_backend(req)
+    schema_dialect = _get_schema_dialect(backend)
 
-    if req.use_schema_linking:
+    warnings: list[str] = []
+    _, relevance_score, relevance_warning = await asyncio.to_thread(
+        check_question_schema_relevance,
+        req.question,
+        schema,
+        settings.question_schema_relevance_threshold,
+        schema_dialect,
+    )
+    if relevance_warning:
+        warnings.append(relevance_warning)
+        logger.info(
+            "Question-schema relevance low: score=%.3f, question=%s",
+            relevance_score,
+            req.question,
+        )
+
+    if req.use_column_level_linking:
+        schema = _maybe_column_schema_link(req.db_id or "", req.question, schema)
+    elif req.use_schema_linking:
         schema = _maybe_schema_link(req.db_id or "", req.question, schema)
 
     if req.use_few_shot:
         examples = await asyncio.to_thread(
             _get_retriever().retrieve, req.question, req.few_shot_k
         )
-        prompt = format_few_shot(tokenizer, schema, req.question, examples)
+        prompt = format_few_shot(
+            tokenizer, schema, req.question, examples, system=SERVING_SYSTEM
+        )
     else:
-        prompt = format_zero_shot(tokenizer, schema, req.question)
+        prompt = format_zero_shot(
+            tokenizer, schema, req.question, system=SERVING_SYSTEM
+        )
 
     start = time.perf_counter()
     raw = await asyncio.to_thread(generate_sql, model, tokenizer, prompt)
     sql = extract_sql(raw)
-    sql = normalize_sql_to_schema(sql, schema)
+    sql = postprocess_sql(sql, schema, dialect=schema_dialect)
+
+    identifiers_valid, unknown_identifiers = validate_sql_identifiers(
+        schema, sql, dialect=schema_dialect
+    )
+    if not identifiers_valid:
+        warnings.append(
+            f"Generated SQL references unknown tables or columns: {', '.join(unknown_identifiers)}. "
+            "Please check that your question matches the database schema."
+        )
 
     if not is_read_only_sql(sql):
         latency = time.perf_counter() - start
@@ -370,12 +447,14 @@ async def generate_sql_endpoint(req: GenerateRequest):
             valid=False,
             execution_error="Query is not read-only or invalid",
             latency=latency,
+            warnings=warnings or None,
         )
 
     result: list | None = None
+    columns: list[str] | None = None
     error: str | None = None
     if req.execute and backend is not None:
-        result, error = await _run_backend_query(backend, sql)
+        result, columns, error = await _run_backend_query(backend, sql)
 
         if error and req.self_correct:
             corrected, _ = await asyncio.to_thread(
@@ -391,11 +470,11 @@ async def generate_sql_endpoint(req: GenerateRequest):
             )
             if corrected != sql:
                 sql = corrected
-                sql = normalize_sql_to_schema(sql, schema)
+                sql = postprocess_sql(sql, schema, dialect=schema_dialect)
                 if not is_read_only_sql(sql):
                     error = "Corrected query is not read-only or invalid"
                 else:
-                    result, error = await _run_backend_query(backend, sql)
+                    result, columns, error = await _run_backend_query(backend, sql)
 
     latency = time.perf_counter() - start
     if req.db_id:
@@ -404,8 +483,10 @@ async def generate_sql_endpoint(req: GenerateRequest):
         sql=sql,
         valid=is_read_only_sql(sql),
         execution_result=result,
+        execution_columns=columns,
         execution_error=error,
         latency=latency,
+        warnings=warnings or None,
     )
 
 
@@ -418,19 +499,27 @@ async def execute_sql_endpoint(req: ExecuteRequest):
         raise HTTPException(status_code=404, detail="Database not found")
     try:
         backend = DatabaseBackend.from_registry(record)
+    except FileNotFoundError as e:
+        logger.warning("Database file not found for db_id=%s: %s", req.db_id, e)
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except OSError as e:
+        logger.warning("Database file not accessible for db_id=%s: %s", req.db_id, e)
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     start = time.perf_counter()
-    result, error = await _run_backend_query(backend, req.sql)
+    result, columns, error = await _run_backend_query(backend, req.sql)
     latency = time.perf_counter() - start
     _record_query(req.db_id, None, req.sql, result, error, latency, edited_sql=req.sql)
     return ExecuteResponse(
         sql=req.sql,
         valid=is_read_only_sql(req.sql),
         execution_result=result,
+        execution_columns=columns,
         execution_error=error,
         latency=latency,
+        warnings=None,
     )
 
 

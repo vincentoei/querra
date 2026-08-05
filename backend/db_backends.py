@@ -95,7 +95,7 @@ def _build_schema_text(
         if pk:
             col_defs.append(f"    PRIMARY KEY ({', '.join(pk)})")
         statements.append(
-            f"CREATE TABLE {table_name} (\n" + ",\n".join(col_defs) + "\n)"
+            f"CREATE TABLE {table_name} (\n" + ",\n".join(col_defs) + "\n);"
         )
 
     fk_lines = [
@@ -138,8 +138,14 @@ class DatabaseBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def execute(self, sql: str, max_rows: int | None = None) -> list[tuple]:
-        """Execute a canonical SQLite SELECT query and return serialized rows."""
+    def execute(
+        self, sql: str, max_rows: int | None = None
+    ) -> tuple[list[tuple], list[str]]:
+        """Execute a canonical SQLite SELECT query.
+
+        Returns a ``(rows, columns)`` tuple where ``columns`` is the list of
+        column names from the cursor description.
+        """
         raise NotImplementedError
 
     @staticmethod
@@ -192,7 +198,9 @@ class SQLiteBackend(DatabaseBackend):
     def get_schema(self) -> str:
         return build_schema_from_sqlite(self.db_path)
 
-    def execute(self, sql: str, max_rows: int | None = None) -> list[tuple]:
+    def execute(
+        self, sql: str, max_rows: int | None = None
+    ) -> tuple[list[tuple], list[str]]:
         if not is_read_only_sql(sql):
             raise ValueError("Only read-only SELECT queries are allowed")
         return execute_sql(sql, self.db_path, max_rows=max_rows)
@@ -282,7 +290,9 @@ class PostgresBackend(DatabaseBackend):
 
         return _build_schema_text(table_columns, primary_keys, foreign_keys)
 
-    def execute(self, sql: str, max_rows: int | None = None) -> list[tuple]:
+    def execute(
+        self, sql: str, max_rows: int | None = None
+    ) -> tuple[list[tuple], list[str]]:
         if not is_read_only_sql(sql):
             raise ValueError("Only read-only SELECT queries are allowed")
         target_sql = _transpile_to_dialect(sql, self.dialect)
@@ -299,7 +309,8 @@ class PostgresBackend(DatabaseBackend):
                         if max_rows is not None
                         else cur.fetchall()
                     )
-                    return _serialize_rows(rows)
+                    columns = [d[0] for d in cur.description] if cur.description else []
+                    return _serialize_rows(rows), columns
         except psycopg.Error as e:
             raise ValueError(f"PostgreSQL execution failed: {e}") from e
 
@@ -399,7 +410,9 @@ class MySQLBackend(DatabaseBackend):
 
         return _build_schema_text(table_columns, primary_keys, foreign_keys)
 
-    def execute(self, sql: str, max_rows: int | None = None) -> list[tuple]:
+    def execute(
+        self, sql: str, max_rows: int | None = None
+    ) -> tuple[list[tuple], list[str]]:
         if not is_read_only_sql(sql):
             raise ValueError("Only read-only SELECT queries are allowed")
         target_sql = _transpile_to_dialect(sql, self.dialect)
@@ -417,7 +430,8 @@ class MySQLBackend(DatabaseBackend):
                         if max_rows is not None
                         else cur.fetchall()
                     )
-                    return _serialize_rows(rows)
+                    columns = [d[0] for d in cur.description] if cur.description else []
+                    return _serialize_rows(rows), columns
             finally:
                 conn.close()
         except pymysql.Error as e:

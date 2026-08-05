@@ -77,6 +77,7 @@ def test_execute_sql(test_db, admin_headers):
     assert data["valid"] is True
     assert data["execution_error"] is None
     assert ["Alice"] in data["execution_result"]
+    assert data["execution_columns"] == ["name"]
 
 
 def test_execute_sql_blocks_destructive(test_db, admin_headers):
