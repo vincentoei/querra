@@ -1,7 +1,6 @@
 """FastAPI middleware for request logging and in-memory rate limiting."""
 
 import logging
-import os
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -9,6 +8,8 @@ from typing import Any
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
+
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        if os.environ.get("RATE_LIMIT_ENABLED", "false").lower() != "true":
+        if not settings.rate_limit_enabled:
             return await call_next(request)
 
         # Skip rate limiting for health checks and CORS preflight.

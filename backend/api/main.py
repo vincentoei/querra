@@ -1,19 +1,14 @@
 """FastAPI inference service for Querra Text-to-SQL."""
 
 import logging
-import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 
-from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.middleware import RateLimitMiddleware, RequestLoggingMiddleware
 from api.state import _state
-from config import ADAPTER_DIR, BASE_MODEL
-
-load_dotenv()
+from config import settings
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,15 +19,13 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if os.environ.get("SKIP_MODEL_LOAD", "0") == "1":
+    if settings.skip_model_load:
         logger.info("SKIP_MODEL_LOAD=1: model loading disabled")
     else:
         from utils.inference import load_model_and_tokenizer
 
-        model_name = os.environ.get("MODEL_NAME", BASE_MODEL)
-        adapter_path = os.environ.get("ADAPTER_PATH", str(ADAPTER_DIR))
-        if not Path(adapter_path).exists():
-            adapter_path = None
+        model_name = settings.model_name
+        adapter_path = settings.effective_adapter_path
         logger.info("Loading model %s (adapter=%s)", model_name, adapter_path)
         model, tokenizer = load_model_and_tokenizer(
             model_name, adapter_path=adapter_path
@@ -46,8 +39,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Querra - Text-to-SQL Assistant", lifespan=lifespan)
 
-_raw_cors = os.environ.get("CORS_ORIGINS", "*")
-_cors_list = [o.strip() for o in _raw_cors.split(",") if o.strip()]
+_cors_list = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 if _cors_list == ["*"]:
     _cors_origins = ["*"]
     _cors_credentials = False
@@ -66,12 +58,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_max_requests = int(os.environ.get("RATE_LIMIT_REQUESTS", "60"))
-_window_seconds = int(os.environ.get("RATE_LIMIT_WINDOW_SECONDS", "60"))
 app.add_middleware(
     RateLimitMiddleware,
-    max_requests=_max_requests,
-    window_seconds=_window_seconds,
+    max_requests=settings.rate_limit_requests,
+    window_seconds=settings.rate_limit_window_seconds,
 )
 app.add_middleware(RequestLoggingMiddleware)
 
@@ -81,7 +71,7 @@ async def health():
     return {
         "status": "ok",
         "model_loaded": "model" in _state,
-        "model": os.environ.get("MODEL_NAME", BASE_MODEL),
+        "model": settings.model_name,
     }
 
 

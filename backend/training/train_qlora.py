@@ -6,7 +6,6 @@ from pathlib import Path
 
 import torch
 from datasets import load_dataset
-from dotenv import load_dotenv
 from peft import LoraConfig, get_peft_model
 from transformers import (
     AutoModelForCausalLM,
@@ -43,23 +42,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config import (
-    ADAPTER_DIR,
-    BASE_MODEL,
-    GRADIENT_ACCUMULATION_STEPS,
-    LEARNING_RATE,
-    LORA_ALPHA,
-    LORA_DROPOUT,
-    LORA_R,
-    MAX_SEQ_LENGTH,
-    NUM_EPOCHS,
-    PER_DEVICE_BATCH_SIZE,
-    PROCESSED_TRAIN,
-    TARGET_MODULES,
-)
+from config import PROCESSED_TRAIN, settings
 from utils.prompts import format_zero_shot
-
-load_dotenv()
 
 
 def find_sublist_start(full: list, sub: list) -> int:
@@ -111,21 +95,25 @@ def preprocess_dataset(tokenizer, dataset, max_seq_length: int):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default=BASE_MODEL)
-    parser.add_argument("--output_dir", default=str(ADAPTER_DIR))
-    parser.add_argument("--num_epochs", type=int, default=NUM_EPOCHS)
-    parser.add_argument("--max_seq_length", type=int, default=MAX_SEQ_LENGTH)
-    parser.add_argument("--batch_size", type=int, default=PER_DEVICE_BATCH_SIZE)
+    parser.add_argument("--model", default=settings.base_model)
+    parser.add_argument("--output_dir", default=str(settings.adapter_dir))
+    parser.add_argument("--num_epochs", type=int, default=settings.num_epochs)
+    parser.add_argument("--max_seq_length", type=int, default=settings.max_seq_length)
     parser.add_argument(
-        "--gradient_accumulation_steps", type=int, default=GRADIENT_ACCUMULATION_STEPS
+        "--batch_size", type=int, default=settings.per_device_batch_size
     )
-    parser.add_argument("--learning_rate", type=float, default=LEARNING_RATE)
-    parser.add_argument("--lora_r", type=int, default=LORA_R)
-    parser.add_argument("--lora_alpha", type=int, default=LORA_ALPHA)
-    parser.add_argument("--lora_dropout", type=float, default=LORA_DROPOUT)
+    parser.add_argument(
+        "--gradient_accumulation_steps",
+        type=int,
+        default=settings.gradient_accumulation_steps,
+    )
+    parser.add_argument("--learning_rate", type=float, default=settings.learning_rate)
+    parser.add_argument("--lora_r", type=int, default=settings.lora_r)
+    parser.add_argument("--lora_alpha", type=int, default=settings.lora_alpha)
+    parser.add_argument("--lora_dropout", type=float, default=settings.lora_dropout)
     parser.add_argument(
         "--target_modules",
-        default=",".join(TARGET_MODULES),
+        default=",".join(settings.target_modules),
         help="Comma-separated LoRA target modules",
     )
     parser.add_argument("--wandb_project", default="text-to-sql-qlora")
@@ -148,7 +136,7 @@ def main():
         args.model,
         trust_remote_code=True,
         padding_side="right",
-        token=os.environ.get("HF_TOKEN"),
+        token=settings.hf_token,
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -167,7 +155,7 @@ def main():
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
-        token=os.environ.get("HF_TOKEN"),
+        token=settings.hf_token,
     )
     model.gradient_checkpointing_enable()
 

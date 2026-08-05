@@ -5,10 +5,6 @@ import json
 import time
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-load_dotenv()
-
 try:
     import wandb
 
@@ -21,21 +17,18 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import (
-    BASE_MODEL,
     DB_DIR,
     PROCESSED_DEV,
     PROCESSED_TRAIN,
-    SCHEMA_LINKING_EMBED_MODEL,
-    SCHEMA_LINKING_EMBEDDINGS_CACHE,
-    SCHEMA_LINKING_TOP_K_TABLES,
     TABLES_FILE,
+    settings,
 )
 from db_backends import SQLiteBackend
 from evaluation.few_shot_retriever import FewShotRetriever
 from evaluation.metrics import component_match, exact_match, execution_match
 from utils.execution import get_db_path
 from utils.inference import generate_sql, load_model_and_tokenizer
-from utils.postprocess import normalize_sql_to_schema
+from utils.postprocess import postprocess_sql
 from utils.prompts import extract_sql, format_few_shot, format_zero_shot
 from utils.schema import load_tables
 from utils.schema_linker import SchemaLinker
@@ -52,7 +45,7 @@ def load_examples(path: Path, limit: int | None = None):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default=BASE_MODEL)
+    parser.add_argument("--model", default=settings.base_model)
     parser.add_argument("--adapter_path", default=None)
     parser.add_argument("--mode", choices=["zero", "few"], default="zero")
     parser.add_argument("--split", default=str(PROCESSED_DEV))
@@ -71,7 +64,15 @@ def main():
         help="Select relevant tables before prompt construction",
     )
     parser.add_argument(
-        "--schema_linking_top_k", type=int, default=SCHEMA_LINKING_TOP_K_TABLES
+        "--use_column_level_linking",
+        action="store_true",
+        help="Select relevant tables and columns before prompt construction",
+    )
+    parser.add_argument(
+        "--schema_linking_top_k", type=int, default=settings.schema_linking_top_k_tables
+    )
+    parser.add_argument(
+        "--column_level_top_k", type=int, default=settings.schema_linking_top_k_columns
     )
     parser.add_argument("--use_wandb", action="store_true")
     parser.add_argument("--wandb_project", default="text-to-sql-qlora")
@@ -93,13 +94,15 @@ def main():
     examples = load_examples(Path(args.split), args.limit)
 
     linker = None
-    if args.use_schema_linking:
+    if args.use_schema_linking or args.use_column_level_linking:
         print("Loading schema linker...")
         tables = load_tables(TABLES_FILE)
         linker = SchemaLinker(
-            tables, SCHEMA_LINKING_EMBED_MODEL, SCHEMA_LINKING_EMBEDDINGS_CACHE
+            tables,
+            settings.schema_linking_embed_model,
+            settings.schema_linking_embeddings_cache,
         )
-        if SCHEMA_LINKING_EMBEDDINGS_CACHE.exists():
+        if settings.schema_linking_embeddings_cache.exists():
             print("Loading schema embeddings cache...")
             linker.load_cache()
         else:
@@ -133,11 +136,26 @@ def main():
             ex["db_id"],
         )
         selected_tables: list[str] = []
+        selected_columns: dict[str, list[str]] = {}
         if linker:
-            schema, selected_tables_set = linker.build_schema(
-                db_id, question, top_k=args.schema_linking_top_k
-            )
-            selected_tables = sorted(selected_tables_set)
+            if args.use_column_level_linking:
+                schema, selected_tables_set, selected_columns_set = (
+                    linker.build_schema_column_level(
+                        db_id,
+                        question,
+                        table_top_k=args.schema_linking_top_k,
+                        column_top_k=args.column_level_top_k,
+                    )
+                )
+                selected_tables = sorted(selected_tables_set)
+                selected_columns = {
+                    t: sorted(c) for t, c in selected_columns_set.items()
+                }
+            else:
+                schema, selected_tables_set = linker.build_schema(
+                    db_id, question, top_k=args.schema_linking_top_k
+                )
+                selected_tables = sorted(selected_tables_set)
         schema_tokens = len(tokenizer(schema, add_special_tokens=False)["input_ids"])
 
         if args.mode == "few":
@@ -149,7 +167,7 @@ def main():
         start = time.time()
         raw = generate_sql(model, tokenizer, prompt)
         pred = extract_sql(raw)
-        pred = normalize_sql_to_schema(pred, schema)
+        pred = postprocess_sql(pred, schema, dialect="sqlite")
 
         em = exact_match(pred, query)
         xm = execution_match(pred, query, db_id, DB_DIR)
@@ -196,6 +214,7 @@ def main():
                 "retries": retries,
                 "schema_used": schema,
                 "selected_tables": selected_tables,
+                "selected_columns": selected_columns,
                 "schema_tokens": schema_tokens,
             }
         )

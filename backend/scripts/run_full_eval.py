@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from config import ADAPTER_DIR
+from config import settings
 
 RUNS = [
     (
@@ -39,7 +39,7 @@ RUNS = [
             sys.executable,
             "scripts/run_baseline.py",
             "--adapter_path",
-            str(ADAPTER_DIR),
+            str(settings.adapter_dir),
             "--mode",
             "zero",
             "--self_correct",

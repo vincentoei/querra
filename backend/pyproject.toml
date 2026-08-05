@@ -13,6 +13,7 @@ dependencies = [
     "numpy>=1.26.0",
     "pandas>=2.0.0",
     "peft>=0.14.0",
+    "pydantic-settings>=2.0",
     "python-dotenv>=1.0.0",
     "sentence-transformers>=3.0.0",
     "sqlglot>=26.0.0",

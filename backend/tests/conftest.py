@@ -12,9 +12,9 @@ TEST_DIR = Path("/tmp/opencode/querra_tests")
 TEST_DIR.mkdir(parents=True, exist_ok=True)
 
 os.environ.setdefault("SKIP_MODEL_LOAD", "1")
-os.environ.setdefault("ADMIN_API_KEY", "test-admin-key")
-os.environ.setdefault("ALLOWED_DB_DIRS", str(TEST_DIR))
-os.environ.setdefault("QUERRA_DB", str(TEST_DIR / "querra_test.db"))
+os.environ["ADMIN_API_KEY"] = "test-admin-key"
+os.environ["ALLOWED_DB_DIRS"] = str(TEST_DIR)
+os.environ["QUERRA_DB"] = str(TEST_DIR / "querra_test.db")
 
 TEST_DB = TEST_DIR / "test_company.db"
 

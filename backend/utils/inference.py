@@ -5,42 +5,39 @@ import sys
 from pathlib import Path
 
 import torch
-from dotenv import load_dotenv
 from huggingface_hub import login
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config import MAX_SEQ_LENGTH
+from config import settings
 from utils.prompts import extract_sql
 
-load_dotenv()
-
-if os.environ.get("HF_TOKEN"):
-    login(token=os.environ["HF_TOKEN"])
+if settings.hf_token:
+    login(token=settings.hf_token)
 
 
 def load_model_and_tokenizer(model_name: str, adapter_path: str | None = None):
     """Load a causal LM and tokenizer. Uses 4-bit quantization by default."""
-    use_cpu = os.environ.get("USE_CPU", "0") == "1"
+    use_cpu = settings.use_cpu or not torch.cuda.is_available()
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
         trust_remote_code=True,
         padding_side="left",
-        token=os.environ.get("HF_TOKEN"),
+        token=settings.hf_token,
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    if use_cpu or not torch.cuda.is_available():
+    if use_cpu:
         # ponytail: CPU path uses float32 to avoid unsupported fp16 ops on CPU.
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype=torch.float32,
             device_map="cpu",
             trust_remote_code=True,
-            token=os.environ.get("HF_TOKEN"),
+            token=settings.hf_token,
         )
     else:
         bnb_config = BitsAndBytesConfig(
@@ -54,7 +51,7 @@ def load_model_and_tokenizer(model_name: str, adapter_path: str | None = None):
             quantization_config=bnb_config,
             device_map="auto",
             trust_remote_code=True,
-            token=os.environ.get("HF_TOKEN"),
+            token=settings.hf_token,
         )
 
     if adapter_path is not None and os.path.exists(adapter_path):
@@ -66,13 +63,14 @@ def load_model_and_tokenizer(model_name: str, adapter_path: str | None = None):
 
 def generate_sql(model, tokenizer, prompt: str, max_new_tokens: int = 256) -> str:
     inputs = tokenizer(
-        prompt, return_tensors="pt", truncation=True, max_length=MAX_SEQ_LENGTH
+        prompt, return_tensors="pt", truncation=True, max_length=settings.max_seq_length
     )
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
     with torch.inference_mode():
         outputs = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
+            max_length=None,
             do_sample=False,
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
