@@ -2,7 +2,7 @@
 
 from db_backends import DatabaseBackend
 from utils.inference import generate_sql
-from utils.postprocess import normalize_sql_to_schema
+from utils.postprocess import postprocess_sql
 from utils.prompts import extract_sql
 from utils.safety import is_read_only_sql
 
@@ -67,7 +67,7 @@ def maybe_correct(
         retry_prompt = build_correction_prompt(tokenizer, schema, question, sql, err)
         raw = generate_sql(model, tokenizer, retry_prompt)
         sql = extract_sql(raw)
-        sql = normalize_sql_to_schema(sql, schema)
+        sql = postprocess_sql(sql, schema)
         if not is_read_only_sql(sql):
             err = "Corrected SQL is not read-only or invalid"
             continue
