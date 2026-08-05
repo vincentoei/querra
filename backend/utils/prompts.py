@@ -7,6 +7,11 @@ SYSTEM = (
     "that answers the question. Output only the SQL query, without explanations or markdown."
 )
 
+SERVING_SYSTEM = SYSTEM + (
+    " When selecting columns, add a short descriptive alias with AS for generic column names "
+    "(e.g., Name AS artist, Title AS album) so each result column has a clear, human-readable label."
+)
+
 
 def _build_user_text(
     schema: str, question: str, examples: list[dict] | None = None
@@ -23,9 +28,11 @@ def _build_user_text(
     return "\n\n".join(parts)
 
 
-def format_zero_shot(tokenizer, schema: str, question: str) -> str:
+def format_zero_shot(
+    tokenizer, schema: str, question: str, *, system: str | None = None
+) -> str:
     messages = [
-        {"role": "system", "content": SYSTEM},
+        {"role": "system", "content": system or SYSTEM},
         {"role": "user", "content": _build_user_text(schema, question)},
     ]
     return tokenizer.apply_chat_template(
@@ -33,9 +40,16 @@ def format_zero_shot(tokenizer, schema: str, question: str) -> str:
     )
 
 
-def format_few_shot(tokenizer, schema: str, question: str, examples: list[dict]) -> str:
+def format_few_shot(
+    tokenizer,
+    schema: str,
+    question: str,
+    examples: list[dict],
+    *,
+    system: str | None = None,
+) -> str:
     messages = [
-        {"role": "system", "content": SYSTEM},
+        {"role": "system", "content": system or SYSTEM},
         {"role": "user", "content": _build_user_text(schema, question, examples)},
     ]
     return tokenizer.apply_chat_template(
