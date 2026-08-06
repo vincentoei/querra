@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Image from "next/image";
 import { toast } from "sonner";
 import {
   Database,
@@ -15,7 +16,6 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -24,7 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ResultsTable } from "@/components/results-table";
-import { AlertTriangle, Loader2 } from "lucide-react";
+import { AlertTriangle, Loader2, Play, Zap } from "lucide-react";
 
 export interface QueryFormProps {
   databases: Database[];
@@ -101,16 +101,25 @@ export function QueryForm({ databases, selectedDb, onSelectedDbChange }: QueryFo
 
   return (
     <div className="space-y-6">
+      {/* Logo + Subtitle */}
       <div className="space-y-2">
-        <h1 className="text-3xl font-bold tracking-tight">Querra</h1>
+        <Image
+          src="/querra-logo.svg"
+          alt="Querra"
+          width={140}
+          height={40}
+          className="h-10 w-auto"
+          priority
+        />
         <p className="text-muted-foreground">
-          Ask questions about your database in plain English.
+          Ask your database questions in plain English.
         </p>
       </div>
 
-      <Card>
+      {/* Question Card */}
+      <Card className="animate-fade-in-up">
         <CardHeader>
-          <CardTitle>New question</CardTitle>
+          <CardTitle className="text-lg">New question</CardTitle>
           <CardDescription>
             Pick a database, type your question, and generate a SQL query.
           </CardDescription>
@@ -136,7 +145,7 @@ export function QueryForm({ databases, selectedDb, onSelectedDbChange }: QueryFo
             <Label htmlFor="question">Question</Label>
             <Input
               id="question"
-              placeholder="What are the names of singers older than 30?"
+              placeholder="Ask a question about your database..."
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               onKeyDown={(e) => {
@@ -146,32 +155,59 @@ export function QueryForm({ databases, selectedDb, onSelectedDbChange }: QueryFo
                 }
               }}
               suppressHydrationWarning
+              className="h-12 text-base"
             />
           </div>
 
           <div className="flex flex-wrap gap-2">
             <Button
+              variant="sky"
+              size="lg"
               onClick={handleGenerate}
               disabled={loading || executing}
               suppressHydrationWarning
+              className="h-11 text-sm font-semibold"
             >
-              {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Generate SQL
+              {loading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Generating SQL...
+                </>
+              ) : (
+                <>
+                  <Zap className="h-4 w-4" />
+                  Generate SQL
+                </>
+              )}
             </Button>
           </div>
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            Generated SQL
-            {result && (
-              <Badge variant={result.valid ? "default" : "destructive"}>
-                {result.valid ? "Valid" : "Invalid"}
-              </Badge>
+      {/* SQL Editor Card */}
+      <Card className="animate-fade-in-up overflow-hidden">
+        <CardHeader className="flex flex-row items-center justify-between pb-3">
+          <CardTitle className="text-lg">Generated SQL</CardTitle>
+          <Button
+            variant="sky"
+            size="sm"
+            onClick={handleRunSql}
+            disabled={!sql || loading || executing}
+            suppressHydrationWarning
+            className="h-8"
+          >
+            {executing ? (
+              <>
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                Running...
+              </>
+            ) : (
+              <>
+                <Play className="h-3.5 w-3.5" />
+                Run SQL
+              </>
             )}
-          </CardTitle>
+          </Button>
         </CardHeader>
         <CardContent className="space-y-4">
           <Textarea
@@ -179,15 +215,17 @@ export function QueryForm({ databases, selectedDb, onSelectedDbChange }: QueryFo
             onChange={(e) => setSql(e.target.value)}
             placeholder="Generated SQL will appear here..."
             rows={6}
-            className="font-mono"
+            data-variant="code"
+            className="font-mono text-sm"
             disabled={!question.trim()}
             suppressHydrationWarning
           />
+
           {result && result.warnings && result.warnings.length > 0 && (
-            <div className="rounded-lg border border-yellow-600/20 bg-yellow-50 p-3 dark:bg-yellow-950/20">
-              <div className="flex items-start gap-2">
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600" />
-                <div className="space-y-1 text-sm text-yellow-800 dark:text-yellow-200">
+            <div className="rounded-lg border border-amber-400/20 bg-amber-400/10 p-3.5">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                <div className="space-y-1 text-sm text-amber-300">
                   {result.warnings.map((warning, idx) => (
                     <p key={idx}>{warning}</p>
                   ))}
@@ -195,30 +233,19 @@ export function QueryForm({ databases, selectedDb, onSelectedDbChange }: QueryFo
               </div>
             </div>
           )}
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              onClick={handleRunSql}
-              disabled={!sql || loading || executing}
-              suppressHydrationWarning
-            >
-              {executing && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Run SQL
-            </Button>
+
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span>Latency: {result ? result.latency.toFixed(3) : "0.000"}s</span>
+            {result?.execution_error && (
+              <span className="text-destructive-foreground">Error: {result.execution_error}</span>
+            )}
           </div>
-          {result && (
-            <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-              <span>Latency: {result.latency.toFixed(3)}s</span>
-              {result.execution_error && (
-                <span className="text-destructive">Error: {result.execution_error}</span>
-              )}
-            </div>
-          )}
         </CardContent>
       </Card>
 
+      {/* Results Card */}
       {result?.execution_result && (
-        <Card>
+        <Card className="animate-fade-in-up">
           <CardHeader>
             <CardTitle>Results</CardTitle>
           </CardHeader>
