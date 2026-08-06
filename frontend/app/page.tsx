@@ -2,8 +2,6 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { PanelLeft, PanelLeftClose } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { QueryFormWrapper } from "@/components/query-form-wrapper";
 import { SchemaPanel } from "@/components/schema-panel";
 import { Database, listDatabases, getSchema } from "@/lib/api";
@@ -12,7 +10,6 @@ export default function Home() {
   const [databases, setDatabases] = React.useState<Database[]>([]);
   const [selectedDb, setSelectedDb] = React.useState<string>("");
   const [schema, setSchema] = React.useState<string>("");
-  const [sidebarOpen, setSidebarOpen] = React.useState(false);
 
   React.useEffect(() => {
     listDatabases()
@@ -47,41 +44,43 @@ export default function Home() {
   const selectedDbRecord = databases.find((db) => db.db_id === selectedDb);
 
   return (
-    <main className="flex-1 bg-background py-6">
-      <div className="flex gap-6 px-6">
-        {sidebarOpen && (
-          <aside className="w-full transition-all lg:w-1/3 lg:max-w-[400px] lg:min-w-[300px]">
-            <div className="sticky top-6">
-              <SchemaPanel
-                schema={schema}
-                displayName={selectedDbRecord?.display_name}
-                backendType={selectedDbRecord?.backend_type}
-              />
-            </div>
-          </aside>
-        )}
-        <section className="flex-1">
-          <div className="mb-4">
-            <Button
-              variant="outline"
-              size="icon"
-              onClick={() => setSidebarOpen((s) => !s)}
-              aria-label={sidebarOpen ? "Close schema panel" : "Open schema panel"}
-            >
-              {sidebarOpen ? (
-                <PanelLeftClose className="h-4 w-4" />
-              ) : (
-                <PanelLeft className="h-4 w-4" />
-              )}
-            </Button>
+    <div className="flex min-h-[100dvh] flex-col">
+      <main className="flex-1">
+        {/* Desktop: Split pane */}
+        <div className="hidden lg:grid lg:grid-cols-[1fr_420px] lg:gap-0">
+          {/* Left: Query flow */}
+          <div className="overflow-y-auto p-6 lg:p-8">
+            <QueryFormWrapper
+              databases={databases}
+              selectedDb={selectedDb}
+              onSelectedDbChange={setSelectedDb}
+            />
           </div>
+
+          {/* Right: Schema panel (fixed) */}
+          <aside className="sticky top-0 h-[100dvh] border-l border-border bg-card">
+            <SchemaPanel
+              schema={schema}
+              displayName={selectedDbRecord?.display_name}
+              backendType={selectedDbRecord?.backend_type}
+            />
+          </aside>
+        </div>
+
+        {/* Mobile: Stacked */}
+        <div className="flex flex-col gap-6 p-4 lg:hidden">
           <QueryFormWrapper
             databases={databases}
             selectedDb={selectedDb}
             onSelectedDbChange={setSelectedDb}
           />
-        </section>
-      </div>
-    </main>
+          <SchemaPanel
+            schema={schema}
+            displayName={selectedDbRecord?.display_name}
+            backendType={selectedDbRecord?.backend_type}
+          />
+        </div>
+      </main>
+    </div>
   );
 }
